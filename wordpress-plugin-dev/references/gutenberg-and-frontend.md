@@ -19,7 +19,7 @@ add_action( 'admin_enqueue_scripts', function ( string $hook ): void {
 } );
 ```
 
-- 版本参数用插件版本（开发期可用 `filemtime` 或 `wp_unique_version` 破缓存）
+- 版本参数用插件版本常量（开发期可用 `filemtime( 路径 )` 破缓存）。**注意没有 `wp_unique_version()` 这个函数**——它不存在于 WordPress 核心，写了会 Fatal
 - 前端脚本别在管理端重复入队；依赖数组写全（`wp-i18n`、`wp-element` 等）
 - CSS 加插件前缀作用域，避免污染主题/其他插件
 

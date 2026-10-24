@@ -57,11 +57,13 @@
 出现即高危（除极少数正当场景且加注释）：
 - 代码执行：`eval`、`assert`、`create_function`、`preg_replace` 带 `/e`
 - 命令执行：`exec`、`shell_exec`、`system`、`passthru`、`proc_open`、`popen`
-- 混淆/隐藏：`base64_decode`（执行上下文）、`gzinflate`、`gzuncompress`、`str_rot13`、`chr(...)` 长链拼接
-- 文件风险：`file_put_contents`（用户可控路径）、`move_uploaded_file`、`fopen` 写模式、`include $_GET`
-- 变量劫持：`extract($_GET/$_POST)`、`parse_str`、`$$var`
+- 混淆/隐藏：`base64_decode` 的结果直接进入执行函数、`gzinflate`、`gzuncompress`、`str_rot13`、`chr(...)` 长链拼接
+- 文件风险：`file_put_contents`（路径含用户输入）、`move_uploaded_file`、`fopen` 写模式、`include $_GET`
+- 变量劫持：`extract($_GET/$_POST)`、`parse_str`（未使用第二参数时）、`$$var`
 - 反序列化：`unserialize($_POST/$_COOKIE)`
+- SQL 注入：`$wpdb->query/get_results` 等直接拼接用户输入（应改用 `prepare`）
 - 回调滥用：`call_user_func` / `call_user_func_array` 的第一个参数来自用户输入
+- REST 缺参：`register_rest_route` 未提供 `permission_callback`（WP 6.5+ 必填）
 
 ## 6. 常见漏洞模式
 
@@ -75,6 +77,7 @@
 
 ## 7. 自动化
 
-- 本 skill 的 `scripts/wp_security_scan.py <目录>` 可批量检查第 5 节黑名单、混淆特征、未净化超全局、缺失 ABSPATH 守卫、隐藏文件、外联域名
+- 本 skill 的 `scripts/wp_security_scan.py <目录>` 可批量检查第 5 节黑名单、混淆特征、未净化超全局、SQL 拼接、缺失 ABSPATH 守卫、REST 缺 `permission_callback`、隐藏文件、外联域名
+- 误报控制：`base64_decode`/`file_put_contents`/`parse_str` 等常见合法用法仅作提示级报告，不会直接判 HIGH；HIGH 基本可直接作为可疑点排查
 - 官方工具：Plugin Check（wordpress.org 插件检查）、PHPStan + wp-phpstan（静态分析）
 - 审查结论分级：HIGH（可直接利用）/ MEDIUM（需条件）/ LOW（卫生问题）/ INFO

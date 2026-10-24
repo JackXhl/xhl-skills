@@ -35,7 +35,7 @@ wordpress-plugin-dev/
     ├── wp_security_scan.py    # 静态安全扫描，输出分级报告
     ├── check_php_syntax.py    # php -l 语法检查（无 PHP 环境自动跳过）
     ├── check_wp_versions.py   # 版本保鲜检查（比对 api.wordpress.org）
-    └── self_test.py           # 技能自测：10 项断言（脚手架/扫描/降级路径回归）
+    └── self_test.py           # 技能自测：14 项断言（脚手架/边界输入/扫描/降级路径回归）
 ```
 
 ## 使用示例
@@ -65,7 +65,7 @@ python scripts/self_test.py
 
 - **安全扫描器**：真实生产插件（`ai-provider-for-china`，5 家国内大模型连接器）实测 HIGH=0，与人工审计结论一致；恶意夹具实测 HIGH=11、10 类威胁全覆盖
 - **脚手架产出**：全选项生成的 10 个 PHP 文件经 PHP 8.5 `php -l` 逐一验证（曾借此修复 namespace 声明位置导致的 7 文件致命错误）
-- **自测套件**：`self_test.py` 10 项断言全绿；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
+- **自测套件**：`self_test.py` 14 项断言全绿（含无选项生成、数字开头/单引号/`*/` 注入等边界输入）；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
 - **CI**：`.github/workflows/skill-ci.yml` 在 ubuntu（自测套件）与 windows（脚手架 php -l）双平台运行
 
 ## License

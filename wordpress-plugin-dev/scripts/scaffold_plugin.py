@@ -477,9 +477,14 @@ def to_php_single_quoted(text: str) -> str:
 
 
 def write(path: str, content: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+    except OSError as exc:
+        # 权限不足、路径被占用等 I/O 失败：给出可读提示而非 Python 栈回溯
+        print(f"错误: 写入文件失败 {path}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 def main() -> int:
@@ -500,6 +505,11 @@ def main() -> int:
     ns = to_namespace(slug)
     cp = to_const_prefix(slug)
     plugin_uri = f"https://example.com/{slug}"
+
+    if os.path.exists(args.path) and not os.path.isdir(args.path):
+        print(f"错误: 输出路径不是目录: {args.path}", file=sys.stderr)
+        return 2
+
     base = os.path.join(args.path, slug)
     if os.path.exists(base):
         print(f"错误: 目标已存在 {base}", file=sys.stderr)
@@ -521,7 +531,11 @@ def main() -> int:
     write(os.path.join(base, "src", "Deactivator.php"), DEACTIVATOR.format(**ctx))
     write(os.path.join(base, "uninstall.php"), UNINSTALL.format(**ctx))
     write(os.path.join(base, "readme.txt"), README_TXT.format(**ctx))
-    os.makedirs(os.path.join(base, "languages"), exist_ok=True)
+    try:
+        os.makedirs(os.path.join(base, "languages"), exist_ok=True)
+    except OSError as exc:
+        print(f"错误: 创建 languages 目录失败: {exc}", file=sys.stderr)
+        return 1
 
     hooks = []
     if args.with_settings:

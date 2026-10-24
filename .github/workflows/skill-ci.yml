@@ -23,7 +23,7 @@ jobs:
         run: python -m py_compile wordpress-plugin-dev/scripts/*.py
       - name: PHP 可用性（ubuntu 镜像预装，缺失则自测自动跳过语法断言）
         run: php -v
-      - name: 运行技能自测（10 项断言）
+      - name: 运行技能自测（16 项断言）
         run: python wordpress-plugin-dev/scripts/self_test.py
 
   scaffold-php-lint:
@@ -45,3 +45,31 @@ jobs:
             php -l "$f" || fail=1
           done < <(find ./ci-out -name "*.php" -print0)
           exit $fail
+      - name: 运行时冒烟（WordPress 存根：autoloader/namespace/钩子）
+        shell: bash
+        run: php wordpress-plugin-dev/scripts/wp_stub.php ./ci-out/ci-test-plugin/ci-test-plugin.php
+
+  php81-compat:
+    name: 最低支持版本兼容（PHP 8.1）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.1"
+      - name: PHP 版本确认
+        run: php -v
+      - name: 生成全选项插件骨架
+        run: python wordpress-plugin-dev/scripts/scaffold_plugin.py --name "PHP81 Test Plugin" --path ./ci-out --with-settings --with-rest --with-blocks --with-ai
+      - name: php -l 校验（须与头部 Requires PHP 声明一致）
+        run: |
+          fail=0
+          for f in $(find ./ci-out -name "*.php"); do
+            php -l "$f" || fail=1
+          done
+          exit $fail
+      - name: 运行时冒烟（PHP 8.1）
+        run: php wordpress-plugin-dev/scripts/wp_stub.php ./ci-out/php81-test-plugin/php81-test-plugin.php

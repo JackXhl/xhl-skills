@@ -48,20 +48,27 @@ PATTERNS: list[tuple[str, str, str, str]] = [
     ("HIGH", "rce", r"\b(exec|shell_exec|system|passthru|proc_open|popen)\s*\(", "系统命令执行"),
     ("HIGH", "rce", r"\bcall_user_func(?:_array)?\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)", "用户输入作回调"),
     # ---- 混淆 / 隐藏 ----
-    ("HIGH", "obfuscation", r"\bbase64_decode\s*\(", "base64_decode（执行上下文常见）"),
+    # base64_decode 单独出现属正常用途（解码 JWT/二进制/数据 URI），
+    # 仅当解码结果直接进入执行函数时才判 HIGH——避免对正常插件刷屏。
+    ("HIGH", "obfuscation", r"\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen)\s*\(\s*[^)]{0,120}base64_decode\s*\(", "base64_decode 结果直接进入执行函数"),
+    ("MEDIUM", "obfuscation", r"\bbase64_decode\s*\(", "base64_decode 使用（确认解码内容是否被执行）"),
     ("HIGH", "obfuscation", r"\b(gzinflate|gzuncompress|str_rot13)\s*\(", "压缩/旋转混淆"),
     ("HIGH", "obfuscation", r"chr\s*\(\s*\d+\s*\)\s*\.\s*chr\s*\(\s*\d+\s*\)\s*\.\s*chr\s*\(\s*\d+\s*\)", "chr() 链拼接（常见混淆）"),
     ("MEDIUM", "obfuscation", r"['\"][A-Za-z0-9+/]{200,}={0,2}['\"]", "超长 base64 样字符串"),
     # ---- 文件风险 ----
     ("HIGH", "file", r"\bmove_uploaded_file\s*\(", "上传文件落盘（需严格校验）"),
-    ("MEDIUM", "file", r"\bfile_put_contents\s*\(", "文件写入"),
+    ("MEDIUM", "file", r"\bfile_put_contents\s*\([^)]*\$_(GET|POST|REQUEST|COOKIE)", "文件写入且路径含用户输入"),
+    ("LOW", "file", r"\bfile_put_contents\s*\(", "文件写入（确认路径不可被用户控制）"),
     ("MEDIUM", "file", r"\b(include|require)(_once)?\s*\(?\s*\$_(GET|POST|REQUEST|COOKIE)", "用户输入作包含路径"),
     ("MEDIUM", "file", r"\bf?open\s*\(.*['\"]w", "写模式打开文件"),
     # ---- 变量劫持 / 反序列化 ----
     ("HIGH", "hijack", r"\bextract\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)", "extract 用户输入"),
     ("HIGH", "hijack", r"\bunserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)", "反序列化用户输入"),
     ("MEDIUM", "hijack", r"\$\$\w+", "可变变量（$$var）"),
-    ("MEDIUM", "hijack", r"\bparse_str\s*\(", "parse_str 变量注入"),
+    # parse_str 只有在不带第二参数时才会覆盖当前作用域变量（WP 官方口径）
+    ("MEDIUM", "hijack", r"\bparse_str\s*\(\s*\$?\w+\s*\)", "parse_str 未使用第二参数（会创建/覆盖局部变量）"),
+    # ---- SQL 注入（拼接式；prepare() 由调用方另行排除）----
+    ("HIGH", "sql", r"\$wpdb->(?:query|get_results|get_row|get_var|get_col)\s*\([^;]{0,400}\$_(?:GET|POST|REQUEST|COOKIE)", "SQL 语句拼接用户输入（应改用 $wpdb->prepare）"),
     # ---- REST 权限 ----
     ("MEDIUM", "rest", r"['\"]permission_callback['\"]\s*=>\s*['\"]__return_true['\"]", "REST permission_callback 为 __return_true（确认确为公开数据）"),
     # ---- 信息泄露 ----
@@ -78,6 +85,7 @@ SANITIZE_HINT_RE = re.compile(
 ABSPATH_RE = re.compile(r"defined\s*\(\s*['\"]ABSPATH['\"]\s*\)")
 URL_RE = re.compile(r"https?://[^\s'\"<>)]+")
 AJAX_HOOK_RE = re.compile(r"add_action\s*\(\s*['\"]wp_ajax_")
+REST_ROUTE_RE = re.compile(r"\bregister_rest_route\s*\(")
 NONCE_RE = re.compile(r"check_ajax_referer|check_admin_referer|wp_verify_nonce")
 IGNORE_DIRS = {".git", "node_modules", "vendor", ".wordpress-org", "languages"}
 SKIP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ttf", ".zip", ".pot", ".po", ".mo"}
@@ -124,6 +132,9 @@ def scan(root: str) -> list[dict]:
             if AJAX_HOOK_RE.search(text) and not NONCE_RE.search(text):
                 findings.append({"severity": "MEDIUM", "category": "ajax-nonce", "file": rel, "line": 1,
                                  "detail": "注册了 wp_ajax_ 处理器但文件内未见 nonce 校验（check_ajax_referer / wp_verify_nonce）"})
+            if REST_ROUTE_RE.search(text) and "permission_callback" not in text:
+                findings.append({"severity": "MEDIUM", "category": "rest", "file": rel, "line": 1,
+                                 "detail": "注册 REST 路由但未见 permission_callback（WP 6.5+ 该参数必填，缺失会导致 _doing_it_wrong）"})
             if re.search(r"<\?php", text) is None and "<?" in text:
                 findings.append({"severity": "LOW", "category": "compat", "file": rel, "line": 1,
                                  "detail": "疑似短开标签 <?"})
@@ -131,6 +142,11 @@ def scan(root: str) -> list[dict]:
             lines = text.splitlines()
             for severity, category, pattern, desc in PATTERNS:
                 for m in re.finditer(pattern, text, re.IGNORECASE):
+                    # SQL 类：同一调用内若使用 prepare() 则为安全写法，不报
+                    if category == "sql":
+                        seg = text[m.start(): m.start() + 400]
+                        if "prepare" in seg:
+                            continue
                     ln = line_of(text, m.start())
                     line_text = lines[ln - 1].strip()[:120] if ln <= len(lines) else ""
                     # 注释行降级提示

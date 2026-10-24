@@ -1,6 +1,6 @@
 ---
 name: wordpress-plugin-dev
-version: 1.0.0
+version: 1.1.0
 description: WordPress 插件开发、审查、加固与发布技能。当任务涉及 WordPress 插件/主题代码（plugin.php、wp-content/plugins、add_action/add_filter、register_setting、wp_remote_*、admin-ajax、REST 路由、block.json、Gutenberg 块、WP 7.0+ AI Client / Connectors API / Abilities API、wp_register_ability、wp_ai_client_prompt、readme.txt 提交 wordpress.org）时使用。覆盖：新建插件脚手架、功能实现、代码审查、安全审计（nonce/capability/净化/转义）、性能优化、AI 功能集成、发布前检查。WordPress plugin development, security audit, Gutenberg, REST API, AI Client, Abilities API.
 author: xhl-skills
 license: MIT
@@ -29,7 +29,7 @@ agent_created: true
 开始前确认（缺失时先问用户，不臆测）：
 - 仓库根目录 + 目标插件（主文件路径）；是完整站点仓库还是纯插件仓库（完整站点先定位到 `wp-content/plugins/` 或 `mu-plugins/` 下具体插件）
 - 运行环境：单站点 vs 多站点（卸载/迁移逻辑不同）
-- 目标 WP + PHP 版本（决定可用 API 与 `$wpdb->prepare()` 占位符支持）
+- 目标 WP + PHP 版本（决定可用 API；`$wpdb->prepare()` 的 `%i` 标识符占位符需 WP 6.2+，与 PHP 版本无关）
 - 是否要走 wordpress.org 发布（决定 readme.txt / Plugin Check / GPL 要求）
 
 ## 工作流
@@ -59,10 +59,11 @@ agent_created: true
 
 1. 运行 `scripts/wp_security_scan.py <插件目录>`，修正所有 HIGH/MEDIUM 发现
 2. 有 PHP CLI 时运行 `scripts/check_php_syntax.py`（无 PHP 则跳过并告知用户）；**带命名空间的类文件必须过 `php -l`**——ABSPATH 守卫若写在 `namespace` 之前会直接 Fatal（见 `plugin-fundamentals.md` 的位置陷阱）
-3. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
-4. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
-5. 发布类任务额外跑 `release-and-quality.md` 的清单
-6. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（10 项断言，含杀软环境韧性）
+3. 新建插件或改动加载链路时，用 `scripts/wp_stub.php <主文件>` 做运行时冒烟：验证 autoloader 能定位类、子命名空间能解析、钩子按预期注册（纯语法检查覆盖不到这些）
+4. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
+5. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
+6. 发布类任务额外跑 `release-and-quality.md` 的清单
+7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（16 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
@@ -92,11 +93,12 @@ agent_created: true
 ## Resources
 
 ### scripts/
-- `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码）
-- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、缺失 nonce/capability、`__return_true` 权限回调、无 nonce 的 wp_ajax 处理器、隐藏文件、外联域名清单，输出分级报告
+- `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码；自动防护命名空间/常量名以数字开头、单引号断裂、头部注释注入等边界输入）
+- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、SQL 拼接、缺失 nonce/capability、`__return_true` 权限回调、REST 缺 `permission_callback`、无 nonce 的 wp_ajax 处理器、隐藏文件、外联域名清单，输出分级报告（对 base64_decode/file_put_contents/parse_str 等常见合法用法仅作提示级报告，不判 HIGH）
 - `check_php_syntax.py` — PHP CLI 探测 + `php -l`（无 PHP 时优雅跳过）
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
-- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、干净/恶意双夹具扫描断言、脚本退出码与降级路径回归；CI 可直接运行
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、运行时冒烟、干净/恶意双夹具扫描断言、脚本退出码与降级路径回归；CI 可直接运行
+- `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并调用 `init()`，验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册（`php -l` 只管语法，这个管运行时）
 
 ### references/
 - `plugin-fundamentals.md` — 头部字段全集、目录规范、加载顺序、激活/停用/卸载、autoload、版本号陷阱
@@ -113,7 +115,7 @@ agent_created: true
 - 参考实现：`ai-provider-for-china`（知更鸟 / zmingcx.com）连接器插件（在 `references/ai-client-connectors-abilities.md` 中有模式拆解）
 
 ### 与官方 agent-skills 的分工（2026-10-24 对比后确立）
-- 官方 `WordPress/agent-skills`（github.com，2288 star）是 18 个技能的权威知识源：块/主题/模式/REST/Interactivity/WP-CLI/性能/PHPStan/Playground 等领域的**深度细节以其为准**；遇块开发、theme.json、WP-CLI 运维等超出本 skill 深度的话题，引导用户安装对应官方技能
+- 官方 `WordPress/agent-skills`（github.com，数千 star）是 18 个技能的权威知识源：块/主题/模式/REST/Interactivity/WP-CLI/性能/PHPStan/Playground 等领域的**深度细节以其为准**；遇块开发、theme.json、WP-CLI 运维等超出本 skill 深度的话题，引导用户安装对应官方技能
 - 本 skill 的定位：**可执行层**——脚手架、安全扫描、语法/版本检查这些拿来即用的脚本 + 中文语境 + AI 三件套的国内连接器实战模式，官方包以文档为主
 - 官方维护机制（eval 场景、上游版本索引自动同步、CI）是本 skill 缺失的，涉及"哪个模式更正确"的争论时以官方为仲裁
 

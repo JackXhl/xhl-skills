@@ -5,6 +5,8 @@
   1. 脚手架全选项生成 -> 文件齐全 -> php -l 语法全过（需 PHP，无则跳过）
   1b. 无选项基础生成 -> {hooks} 占位符不残留
   1c. 特殊字符插件名（数字开头/单引号/*/ 注入）-> 生成且语法合法
+  1d. CLI 边界（--path 指向文件）-> 优雅报错，不抛栈回溯
+  1e. 运行时冒烟（WordPress 存根）-> autoloader/namespace/钩子注册正确
   2. 扫描器对干净产出 -> HIGH=0
   3. 扫描器对恶意夹具 -> exit=1、HIGH>=8、威胁类别全覆盖
      （rce/obfuscation/file/hijack/binary/hidden/abspath/ajax-nonce/rest/input）
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,12 +91,19 @@ add_action( 'rest_api_init', function () {
 } );
 """
 
+EVIL_SQL = """<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+global $wpdb;
+$rows = $wpdb->get_results( "SELECT * FROM {$wpdb->prefix}posts WHERE id = " . $_GET['id'] );
+"""
+
 EVIL_FILES = {
     "evil-plugin.php": None,  # 内容在 build_evil 中写入
     "noguard.php": None,
     "rce.php": None,
     "obfuscated.php": None,
     "rest.php": None,
+    "sql.php": None,
     ".env": None,
     "dropper.exe": None,
 }
@@ -149,6 +159,7 @@ def build_evil(dirpath: Path) -> None:
     (dirpath / "rce.php").write_text(EVIL_RCE, encoding="utf-8")
     (dirpath / "obfuscated.php").write_text(EVIL_OBFUSCATED, encoding="utf-8")
     (dirpath / "rest.php").write_text(EVIL_REST, encoding="utf-8")
+    (dirpath / "sql.php").write_text(EVIL_SQL, encoding="utf-8")
     (dirpath / ".env").write_text("SECRET=fixture\n", encoding="utf-8")
     (dirpath / "dropper.exe").write_bytes(b"MZ\x90\x00\x03")
 
@@ -226,6 +237,32 @@ def main() -> int:
         else:
             skip("特殊字符插件名 php -l 全部通过", "未检测到 PHP CLI")
 
+        # ---- 测试 1d: CLI 边界（--path 指向文件应优雅报错，非栈回溯）----
+        not_a_dir = tmp / "not-a-dir"
+        not_a_dir.write_text("x", encoding="utf-8")
+        proc = run(SCAFFOLD, "--name", "File Path Plugin", "--path", str(not_a_dir))
+        check("--path 指向文件时优雅报错",
+              proc.returncode == 2 and "Traceback" not in proc.stderr
+              and "不是目录" in proc.stderr,
+              (proc.stderr.strip().splitlines() or ["无输出"])[-1][:60])
+
+        # ---- 测试 1e: 运行时冒烟（WordPress 存根）----
+        # php -l 只验证语法；本项验证运行时：PSR-4 autoloader 能否定位类、
+        # 子命名空间（Admin/Api/Ai/Blocks）能否解析、常量定义时机、钩子注册。
+        if php:
+            stub = SCRIPTS / "wp_stub.php"
+            r = subprocess.run([php, str(stub), str(plugin_dir / "self-test-plugin.php")],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace")
+            m = re.search(r"钩子注册数:\s*(\d+)", r.stdout)
+            hook_count = int(m.group(1)) if m else 0
+            check("运行时冒烟通过（autoloader/namespace/钩子）",
+                  r.returncode == 0 and hook_count >= 7 and "FAIL" not in r.stdout,
+                  f"钩子 {hook_count} 个" if hook_count else
+                  (r.stdout.strip().splitlines() or ["无输出"])[-1][:70])
+        else:
+            skip("运行时冒烟通过（autoloader/namespace/钩子）", "未检测到 PHP CLI")
+
         # ---- 测试 2: 扫描器对干净产出 ----
         proc = run(SCANNER, str(plugin_dir), "--json")
         try:
@@ -252,7 +289,7 @@ def main() -> int:
         import wp_security_scan as scanner  # 预热导入，压缩写入-扫描窗口
 
         need = {"rce", "obfuscation", "file", "hijack", "binary",
-                "hidden", "abspath", "ajax-nonce", "rest", "input"}
+                "hidden", "abspath", "ajax-nonce", "rest", "input", "sql"}
         result: tuple[dict, set] | None = None
         for attempt in (1, 2):
             build_evil(evil)

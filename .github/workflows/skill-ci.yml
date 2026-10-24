@@ -1,0 +1,47 @@
+name: skill-ci
+
+on:
+  push:
+    paths:
+      - "wordpress-plugin-dev/**"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "wordpress-plugin-dev/**"
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: 技能自测套件（ubuntu）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 脚本语法编译检查
+        run: python -m py_compile wordpress-plugin-dev/scripts/*.py
+      - name: PHP 可用性（ubuntu 镜像预装，缺失则自测自动跳过语法断言）
+        run: php -v
+      - name: 运行技能自测（10 项断言）
+        run: python wordpress-plugin-dev/scripts/self_test.py
+
+  scaffold-php-lint:
+    name: 脚手架产出 PHP 语法校验（windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 生成全选项插件骨架
+        shell: bash
+        run: python wordpress-plugin-dev/scripts/scaffold_plugin.py --name "CI Test Plugin" --path ./ci-out --with-settings --with-rest --with-blocks --with-ai
+      - name: php -l 校验全部产出
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            php -l "$f" || fail=1
+          done < <(find ./ci-out -name "*.php" -print0)
+          exit $fail

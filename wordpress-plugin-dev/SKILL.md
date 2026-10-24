@@ -58,10 +58,11 @@ agent_created: true
 ### 第 4 步：验证
 
 1. 运行 `scripts/wp_security_scan.py <插件目录>`，修正所有 HIGH/MEDIUM 发现
-2. 有 PHP CLI 时运行 `scripts/check_php_syntax.py`（无 PHP 则跳过并告知用户）
+2. 有 PHP CLI 时运行 `scripts/check_php_syntax.py`（无 PHP 则跳过并告知用户）；**带命名空间的类文件必须过 `php -l`**——ABSPATH 守卫若写在 `namespace` 之前会直接 Fatal（见 `plugin-fundamentals.md` 的位置陷阱）
 3. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
 4. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
 5. 发布类任务额外跑 `release-and-quality.md` 的清单
+6. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（10 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
@@ -92,9 +93,10 @@ agent_created: true
 
 ### scripts/
 - `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码）
-- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、缺失 nonce/capability、隐藏文件、外联域名清单，输出分级报告
+- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、缺失 nonce/capability、`__return_true` 权限回调、无 nonce 的 wp_ajax 处理器、隐藏文件、外联域名清单，输出分级报告
 - `check_php_syntax.py` — PHP CLI 探测 + `php -l`（无 PHP 时优雅跳过）
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、干净/恶意双夹具扫描断言、脚本退出码与降级路径回归；CI 可直接运行
 
 ### references/
 - `plugin-fundamentals.md` — 头部字段全集、目录规范、加载顺序、激活/停用/卸载、autoload、版本号陷阱

@@ -92,11 +92,11 @@ PLUGIN_CLASS = """<?php
  * @package {namespace}
  */
 
+namespace {namespace};
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace};
 
 class Plugin {{
 
@@ -114,11 +114,11 @@ ACTIVATOR = """<?php
  * @package {namespace}
  */
 
+namespace {namespace};
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace};
 
 class Activator {{
 
@@ -140,11 +140,11 @@ DEACTIVATOR = """<?php
  * @package {namespace}
  */
 
+namespace {namespace};
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace};
 
 class Deactivator {{
 
@@ -185,11 +185,11 @@ SETTINGS_CLASS = """<?php
  * @package {namespace}\\Admin
  */
 
+namespace {namespace}\\Admin;
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace}\\Admin;
 
 class SettingsPage {{
 
@@ -252,11 +252,11 @@ REST_CLASS = """<?php
  * @package {namespace}\\Api
  */
 
+namespace {namespace}\\Api;
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace}\\Api;
 
 class RestRoutes {{
 
@@ -295,11 +295,11 @@ AI_CLASS = """<?php
  * @package {namespace}\\Ai
  */
 
+namespace {namespace}\\Ai;
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace}\\Ai;
 
 class AiFeatures {{
 
@@ -369,11 +369,11 @@ BLOCK_PHP = """<?php
  * @package {namespace}\\Blocks
  */
 
+namespace {namespace}\\Blocks;
+
 if ( ! defined( 'ABSPATH' ) ) {{
     exit;
 }}
-
-namespace {namespace}\\Blocks;
 
 class ExampleBlock {{
 
@@ -482,14 +482,7 @@ def main() -> int:
         hooks.append("        add_action( 'init', array( Blocks\\ExampleBlock::class, 'init' ) );")
 
     if hooks:
-        plugin_path = os.path.join(base, f"{slug}.php")
-        with open(plugin_path, "r", encoding="utf-8") as fh:
-            content = fh.read()
-        content = content.replace(
-            "add_action( 'plugins_loaded', array( " + ns + "\\Plugin::class, 'init' ) );",
-            "add_action( 'plugins_loaded', array( " + ns + "\\Plugin::class, 'init' ) );",
-        )
-        write(plugin_path, content)
+        # 将可选功能的 hooks 注入 Plugin::init()
         plugin_class_path = os.path.join(base, "src", "Plugin.php")
         with open(plugin_class_path, "r", encoding="utf-8") as fh:
             pc = fh.read()

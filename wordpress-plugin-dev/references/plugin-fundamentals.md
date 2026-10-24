@@ -73,6 +73,23 @@ spl_autoload_register( function ( string $class ): void {
 } );
 ```
 
+**namespace 声明位置陷阱**（致命错误，`php -l` 才能发现）：PHP 要求 `namespace X;` 必须是文件的**第一条语句**（只允许 `declare` 在前），注释除外。因此带命名空间的类文件里，ABSPATH 守卫必须写在 `namespace` **之后**：
+
+```php
+<?php
+/**
+ * @package MyPlugin\Admin
+ */
+
+namespace MyPlugin\Admin;
+
+if ( ! defined( 'ABSPATH' ) ) { exit; }   // 守卫放这里，不是上面
+
+class SettingsPage {}
+```
+
+守卫写在 namespace 之前会直接 Fatal error（"Namespace declaration statement has to be the very first statement"），插件一激活就白屏——肉眼审查极易漏掉，务必用 `php -l` 或本 skill 的 `scripts/check_php_syntax.py` 验证。
+
 ## 3. 生命周期钩子
 
 - **activation**：建表、默认选项、`flush_rewrite_rules()`（CPT/重写规则在此刷新，且只在此）

@@ -46,6 +46,8 @@ PATTERNS: list[tuple[str, str, str, str]] = [
     ("HIGH", "hijack", r"\bunserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)", "反序列化用户输入"),
     ("MEDIUM", "hijack", r"\$\$\w+", "可变变量（$$var）"),
     ("MEDIUM", "hijack", r"\bparse_str\s*\(", "parse_str 变量注入"),
+    # ---- REST 权限 ----
+    ("MEDIUM", "rest", r"['\"]permission_callback['\"]\s*=>\s*['\"]__return_true['\"]", "REST permission_callback 为 __return_true（确认确为公开数据）"),
     # ---- 信息泄露 ----
     ("LOW", "info", r"\bphpinfo\s*\(", "phpinfo()"),
     ("LOW", "info", r"@\$\w+->\w+\(", "@ 静默错误抑制（不一定是问题，仅提示）"),
@@ -59,6 +61,8 @@ SANITIZE_HINT_RE = re.compile(
 )
 ABSPATH_RE = re.compile(r"defined\s*\(\s*['\"]ABSPATH['\"]\s*\)")
 URL_RE = re.compile(r"https?://[^\s'\"<>)]+")
+AJAX_HOOK_RE = re.compile(r"add_action\s*\(\s*['\"]wp_ajax_")
+NONCE_RE = re.compile(r"check_ajax_referer|check_admin_referer|wp_verify_nonce")
 IGNORE_DIRS = {".git", "node_modules", "vendor", ".wordpress-org", "languages"}
 SKIP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ttf", ".zip", ".pot", ".po", ".mo"}
 
@@ -101,14 +105,18 @@ def scan(root: str) -> list[dict]:
                 guard = "WP_UNINSTALL_PLUGIN" if is_uninstall else "ABSPATH"
                 findings.append({"severity": "MEDIUM", "category": "abspath", "file": rel, "line": 1,
                                  "detail": f"缺少直接访问守卫（应有 if ( ! defined( '{guard}' ) ) exit;）"})
+            if AJAX_HOOK_RE.search(text) and not NONCE_RE.search(text):
+                findings.append({"severity": "MEDIUM", "category": "ajax-nonce", "file": rel, "line": 1,
+                                 "detail": "注册了 wp_ajax_ 处理器但文件内未见 nonce 校验（check_ajax_referer / wp_verify_nonce）"})
             if re.search(r"<\?php", text) is None and "<?" in text:
                 findings.append({"severity": "LOW", "category": "compat", "file": rel, "line": 1,
                                  "detail": "疑似短开标签 <?"})
 
+            lines = text.splitlines()
             for severity, category, pattern, desc in PATTERNS:
                 for m in re.finditer(pattern, text, re.IGNORECASE):
                     ln = line_of(text, m.start())
-                    line_text = text.splitlines()[ln - 1].strip()[:120] if ln <= len(text.splitlines()) else ""
+                    line_text = lines[ln - 1].strip()[:120] if ln <= len(lines) else ""
                     # 注释行降级提示
                     if line_text.lstrip().startswith(("*", "//", "#", "/*")):
                         sev = "INFO" if severity == "HIGH" else severity

@@ -29,7 +29,7 @@ do_action( 'my_plugin_event', $arg );              // 暴露自己的扩展点
 | 后台菜单 | `add_menu_page` / `add_submenu_page` / `add_options_page`，第三个参数是 capability（如 `manage_options`） |
 | Ajax | `wp_ajax_{action}`（登录用户）+ `wp_ajax_nopriv_{action}`（未登录，慎用）；必须 `check_ajax_referer` + `current_user_can`，`wp_send_json_success/error` 收尾 |
 | REST | `register_rest_route`：`permission_callback` 必填；`args` 声明 schema；`rest_ensure_response` 返回 |
-| 入队资源 | `wp_enqueue_script/style`（依赖数组、`wp_unique_version` 或插件版本号、仅在实际页面入队） |
+| 入队资源 | `wp_enqueue_script/style`（依赖数组、版本号用插件常量或 `filemtime()` 破缓存、仅在实际页面入队）。**没有 `wp_unique_version()` 这个核心函数**，别写 |
 | 数据库 | `$wpdb->prepare` 拼接；自定义表用 `dbDelta` 建表（注意双空格格式要求） |
 
 ## 3. Settings API 完整模式

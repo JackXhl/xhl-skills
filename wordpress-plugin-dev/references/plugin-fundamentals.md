@@ -101,9 +101,11 @@ class SettingsPage {}
 
 ```php
 // Plugin.php（挂在 plugins_loaded 上）
-public static function init(): void {
-    add_action( 'plugins_loaded', array( Admin\SettingsPage::class, 'init' ) ); // ← 永不执行
-    add_action( 'plugins_loaded', array( Api\RestRoutes::class, 'init' ) );     // ← 永不执行
+class Plugin {
+    public static function init(): void {
+        add_action( 'plugins_loaded', array( Admin\SettingsPage::class, 'init' ) ); // ← 永不执行
+        add_action( 'plugins_loaded', array( Api\RestRoutes::class, 'init' ) );     // ← 永不执行
+    }
 }
 ```
 

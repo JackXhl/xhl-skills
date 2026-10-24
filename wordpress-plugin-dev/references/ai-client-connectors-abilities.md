@@ -22,16 +22,21 @@ echo wp_kses_post( $text );
 - **返回值类型（易错点）**：
   - `generate_text()` 返回 `string|WP_Error`
   - `generate_text_result()` 返回 `GenerativeAiResult|WP_Error`，其取文本的方法是 **`toText()`**（camelCase），另有 `toTexts()`、`toImageFile()`、`getTokenUsage()`、`getProviderMetadata()`、`getModelMetadata()`——**没有 `get_text()` 这个方法**，写成 snake_case 会直接 Fatal
-- **特性探测（不发请求）**：`$builder->is_supported_for_text_generation()` / 对应 image/vision 方法。展示 AI UI 前先探测
-- **阻断提示**：`wp_ai_client_prevent_prompt` 过滤器可阻止提示词执行（返回 `true` 即阻止）；被阻止时 `is_supported_*()` 返回 `false`，生成方法返回 `WP_Error`
+- **特性探测（不发请求、零成本、纯确定性判断）**：
+  - `$builder->is_supported_for_text_generation()` / `is_supported_for_image_generation()` / `is_supported_for_text_to_speech_conversion()` / `is_supported_for_speech_generation()` / `is_supported_for_video_generation()` / `is_supported_for_music_generation()` / `is_supported_for_embedding_generation()` / `is_supported()`。展示 AI UI 前先探测
+  - **`wp_supports_ai()` 是零参数函数**（官方签名 `wp_supports_ai(): bool`），判断当前环境是否允许使用 AI；受 `WP_AI_SUPPORT` 常量与 `wp_supports_ai` 过滤器控制。**它不接受 feature 参数**——能力维度要用 builder 上的 `is_supported_*()`
+- **阻断提示**：`wp_ai_client_prevent_prompt` 过滤器可阻止提示词执行（返回 `true` 即阻止）；被阻止时 `is_supported_*()` 返回 `false`，生成方法返回 `WP_Error`（error code 为 `prompt_prevented`，status 503）
+- **方法命名是 snake_case**：`WP_AI_Client_Prompt_Builder` 通过魔术方法 `__call` 把 snake_case 代理到底层 SDK 的 camelCase 方法。但**返回的结果对象是 SDK 的原生对象，方法是 camelCase**——这是最容易踩的边界
+- **把 abilities 暴露给模型**：`->using_abilities( 'my-plugin/my-ability', ... )` 会把已注册的 ability 转成模型的 function declaration（函数名加 `wpab__` 前缀），模型即可直接调用你的 ability
 
 模型来源：站点管理员在 **Settings > Connectors** 配置的官方 provider 插件（OpenAI / Anthropic / Google，以及第三方如国内五家连接器）。插件不自己存 Key、不自己写 HTTP 客户端。
 
 ## 2. Connectors API（统一凭证层）
 
 - 站点侧：Settings > Connectors 一个页面存所有外部服务 API Key，"配置一次，处处可用"
-- 默认 AI provider：`core/openai`（ai-provider-for-openai）、`core/claude`、`core/gemini`；密钥选项名约定 `connectors_ai_{provider}_api_key`
-- 注册自己的连接器（`wp_connectors_init` 钩子，注册表在 `init` 优先级 15 初始化）：
+- **内置连接器 ID（无任何前缀）**：`anthropic`（Claude）、`google`（Gemini）、`openai`（GPT）、`akismet`（非 AI，type 为 `spam_filtering`）。
+  官方 provider 插件文件名分别是 `ai-provider-for-anthropic` / `ai-provider-for-google` / `ai-provider-for-openai`——**插件目录名不是连接器 ID**，别把两者混用
+- 注册自己的连接器（挂 `wp_connectors_init`；注册表在 `init` 优先级 15 初始化，该动作在此之后触发）：
 
 ```php
 add_action( 'wp_connectors_init', function ( WP_Connector_Registry $registry ): void {
@@ -41,17 +46,27 @@ add_action( 'wp_connectors_init', function ( WP_Connector_Registry $registry ): 
         'description' => __( 'Syncs content with My Service.', 'my-plugin' ),
         'type'        => 'content_sync',
         'authentication' => array(
-            'method'         => 'api_key',          // 或 'none'
+            'method'          => 'api_key',          // 'api_key' | 'application_password' | 'none'
             'credentials_url' => 'https://example.com/account/api-keys',
-            'setting_name'   => 'my_plugin_my_service_api_key',
+            'setting_name'    => 'my_plugin_my_service_api_key',  // 省略则自动生成
+            'constant_name'   => 'MYPLUGIN_API_KEY',  // 可选：PHP 常量来源
+            'env_var_name'    => 'MYPLUGIN_API_KEY',  // 可选：环境变量来源
+        ),
+        'plugin'      => array(
+            'file'      => 'my-plugin/my-plugin.php',  // 相对插件目录的路径
+            'is_active' => static function (): bool { return defined( 'MY_PLUGIN_VERSION' ); },
         ),
     ) );
 } );
 ```
 
-- 消费：`wp_is_connector_registered( 'openai' )` → `wp_get_connector( 'openai' )` 返回凭证与 base_url（已解密）；`wp_get_connectors()` 列全部
-- ID 规则 `/^[a-z0-9_-]+$/`，注册表拒绝重复 ID；覆盖元数据需先 `unregister` 改完再 `register`，且先 `is_registered` 检查
-- **AI provider 连接器受 `wp_supports_ai()` 门控**（可被 `WP_AI_SUPPORT` 常量或 `wp_supports_ai` 过滤器关闭），AI 插件必须特性探测
+- **消费**：`wp_is_connector_registered( 'openai' )` → `wp_get_connector( 'openai' )` 返回**元数据**数组（键：`name`、`description`、`type`、`authentication`，可选 `logo_url`、`plugin`），未注册时返回 `null`；`wp_get_connectors()` 列全部（以 ID 为键）
+  - ⚠️ **返回的连接器数据里没有 `base_url`，也不含明文 API Key**——密钥要自己按 `authentication.setting_name` / `constant_name` / `env_var_name` 去取，别指望 `wp_get_connector()` 直接给你密钥
+- **ID 规则** `/^[a-z0-9_-]+$/`；注册表拒绝重复 ID；覆盖元数据需先 `unregister` 改完再 `register`，且先 `is_registered` 检查（对不存在的 ID 调 `unregister` 会触发 `_doing_it_wrong`）
+- **`setting_name` 省略时自动生成**为 `connectors_{type}_{id}_{method}`（连字符归一化为下划线），例如 type=`ai_provider`、id=`deepseek` → `connectors_ai_deepseek_api_key`
+- **API Key 读取优先级**：环境变量 → PHP 常量 → 数据库选项。三者都拿不到才视为未配置
+- **AI provider 连接器受 `wp_supports_ai()` 门控**（可被 `WP_AI_SUPPORT` 常量或 `wp_supports_ai` 过滤器关闭）；当 `type` 为 `ai_provider` 且 `wp_supports_ai()` 为 false 时，`register()` **静默返回 `null`**（不报 `_doing_it_wrong`），所以 AI 插件必须特性探测
+- **AI provider 连接器是自动发现的**：provider 插件只要注册进 WP AI Client 的 provider registry，Connectors API 就会自动建好连接器，**不要手动重复注册**。`wp_connectors_init` 主要用于注册非 AI 连接器或覆盖既有连接器的元数据
 
 ## 3. Abilities API（把功能注册为机器可调用能力）
 
@@ -96,11 +111,51 @@ add_action( 'wp_abilities_api_init', function (): void {
 ```
 
 - 命名：`vendor/ability`，只允许小写字母数字、连字符与斜杠（正则 `^[a-z0-9-]+/[a-z0-9-]+$`）；分类 slug 正则 `^[a-z0-9]+(?:-[a-z0-9]+)*$`
+- **必填参数**（官方标注 Required，缺一即注册失败）：`label`、`description`、`category`、`execute_callback`、`permission_callback`
 - input/output schema 用 JSON Schema（WP 实现 draft-04 子集，参考 REST schema 文档）；有入参/返回值时 schema 是强制的
-- **`meta.public`（WP 7.1）**：统一对外暴露意图，REST 生效规则 `show_in_rest ?? public ?? false`；MCP Adapter 从新版起尊重该标志
+- **`meta.public`（WP 7.1）**：统一对外暴露意图，REST 生效规则 `show_in_rest ?? public ?? false`（`??` 语义：显式 `false` 会被保留，不视为缺失）；MCP Adapter 从新版起尊重该标志
 - **暴露 ≠ 授权**：`public` 只管可发现性，执行仍必须过 `permission_callback`，永远用真实 capability
 - 调用：`WP_Ability::execute()`（支持 ability 组合，一个 ability 调另一个）
 - 官方参考：`developer.wordpress.org/reference/functions/wp_register_ability/`；官方 AI 插件（wordpress.org 搜 "AI"）内含 Alt Text、摘要等大量 ability 实现可作范例
+
+### REST 端点与 HTTP 方法由 annotations 决定（易漏）
+
+Abilities API 自动暴露 REST 路由，插件**不需要自己写 `register_rest_route()`**：
+
+```
+GET    /wp-json/wp-abilities/v1/abilities            # 列表（可按 category / namespace / annotations 过滤）
+GET    /wp-json/wp-abilities/v1/abilities/{name}     # 单个
+GET|POST|DELETE /wp-json/wp-abilities/v1/abilities/{name}/run
+```
+
+**`run` 端点用哪个 HTTP 方法由 `meta.annotations` 决定，不是随便选**：
+
+| annotations | 客户端应使用 |
+|---|---|
+| `readonly: true` | **GET**（只读能力必须用 GET，这是要求不是建议） |
+| `destructive: true` | **DELETE** |
+| 其余情况 | **POST** |
+
+- GET / DELETE 的 `input` 放在 URL 编码的 `input` 查询参数里；POST 放在 JSON body 的 `{"input": {...}}`
+- **所有 Abilities REST 端点都要求已认证用户**——匿名用户连"有哪些 ability"都看不到。会话 cookie、应用密码（外部集成首选）、自定义认证插件都可以
+- 常见错误码：`ability_invalid_input`、`ability_invalid_permissions`（403）、`ability_invalid_output`、`ability_missing_input_schema`
+- 客户端应当**先读取 ability 元数据再决定方法**，不要按名字硬编码
+
+### WP 7.1 新增的执行生命周期过滤器
+
+7.1 给 `WP_Ability::execute()` 加了 4 个过滤器（此前只有 `wp_before_execute_ability` / `wp_after_execute_ability` 两个 action，只能观察不能干预）：
+
+| 过滤器 | 时机 | 用途 |
+|---|---|---|
+| `wp_pre_execute_ability` | 流水线最前，在归一化/校验/鉴权之前 | 返回非原值即**短路**整个执行（维护模式、限流、缓存、测试 mock） |
+| `wp_ability_normalize_input` | schema 默认值应用后、校验前 | 注入上下文元数据、补充 JSON Schema 表达不了的默认值 |
+| `wp_ability_permission_result` | `permission_callback` 执行后 | 追加授权规则；**返回 `true` 可以推翻原回调的拒绝，需谨慎** |
+| `wp_ability_execute_result` | 回调返回后、输出校验前 | 改写/脱敏最终结果 |
+
+- 执行顺序：`wp_pre_execute_ability` → `normalize_input()` → `wp_ability_normalize_input` → `validate_input()` → `check_permissions()` → `wp_ability_permission_result` → `wp_before_execute_ability` → 回调 → `wp_ability_execute_result` → `validate_output()` → `wp_after_execute_ability`
+- 这 4 个过滤器对**全站每个 ability 都会触发**，回调里务必先按 `$ability_name` 判断目标
+- 另有 `wp_ability_invoked` action 在最开头触发（原始输入，适合做审计日志）；但它拿到的是**未归一化的原始输入**，可能含凭证或隐私数据，不要无差别记录
+- `wp_get_abilities()` 在 7.1 起支持按 `category` / `namespace` / `meta` 过滤，并新增 `wp_get_abilities_item_include`、`wp_get_abilities_result` 两个过滤器
 
 ### 三类注册错误的排查顺序
 
@@ -120,7 +175,12 @@ add_action( 'wp_abilities_api_init', function (): void {
 
 ## 4. MCP Adapter
 
-把已注册 abilities 暴露为 MCP 工具，AI 编码助手（Claude Code、Cursor 等）可直接操作站点。插件侧无需特殊代码，注册好 ability 并设 `meta.public` 即可被其消费。
+把已注册 abilities 暴露为 MCP 工具，AI 编码助手（Claude Code、Cursor、VS Code、ChatGPT 等）可直接操作站点。
+
+- **它不是 WordPress 核心的一部分**，而是独立包（`github.com/WordPress/mcp-adapter`），2026-10-07 起也已上架 wordpress.org 插件目录（v0.7.0，要求 WP 6.9+ / PHP 7.4+）。之所以留在核心外，是因为 MCP 规范仍在变动
+- **默认是保守的：WordPress abilities 默认私有**。要让某个 ability 被 MCP 暴露，需显式设置 `meta.public`（或通道专用的 `meta.mcp.public`）
+- 插件侧不需要写任何 MCP 代码：注册好 ability 并设 `meta.public` 即可被消费；Adapter 负责 HTTP / STDIO 传输，并且**仍然会执行每个 ability 的 `permission_callback`**
+- `meta.public` 只表达"你的插件愿意被外部调用"的意图，**不负责安装服务器、不负责选传输方式、也不负责连接某个客户端**——不要为了"上 MCP"给站点强加依赖
 
 ## 5. 实战模式：AI Provider 连接器插件（国内五家）
 
@@ -129,7 +189,8 @@ add_action( 'wp_abilities_api_init', function (): void {
 1. 每个 provider 一个类继承 `WordPress\AiClient\Providers\ApiBasedImplementation\AbstractApiProvider`：实现 `baseUrl()`、`createModel()`、`createProviderMetadata()`、`createProviderAvailability()`、`createModelMetadataDirectory()`
 2. 模型类继承 `AbstractOpenAiCompatibleTextGenerationModel`，覆写 `createRequest()` 指向自家端点；国内厂商普遍不支持 `json_schema` response_format，统一 trait 移除该参数
 3. 模型元数据目录实现 `ModelMetadataDirectoryInterface`（静态模型清单 + 能力声明）
-4. `AiClient::defaultRegistry()->registerProvider( ... )` 在 `init` 注册
+4. `AiClient::defaultRegistry()->registerProvider( ... )` 在 `init` 优先级 5 注册（注册前先 `hasProvider()` 判重）
 5. 可用性检查用真实请求打 `/models` 端点，读 `connectors_ai_{slug}_api_key` 选项；密钥只发往官方域名
-6. 如需自动批准连接器使用：`WordPress\AI\Connector_Approval\Approvals_Store`（`set_approval( $basename, $slug, true )`）
+6. 如需自动批准连接器使用：`WordPress\AI\Connector_Approval\Approvals_Store`（`set_approval( $basename, $slug, true )`）——该类不存在时需优雅降级（`class_exists()` 判断）
 7. 安全红线同样适用：endpoint 可被管理员改（中转/代理场景属有意设计），但必须受 `manage_options` + nonce 保护
+8. 可选：用 `wpai_preferred_text_models` 过滤器把已配置密钥的 provider 模型加入首选列表，让摘要等内置 AI 功能也能走国内 provider

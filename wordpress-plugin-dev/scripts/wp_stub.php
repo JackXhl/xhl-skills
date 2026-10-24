@@ -62,8 +62,12 @@ function remove_filter( $tag, $cb, $priority = 10 ) { return true; }
  * 执行钩子。语义对齐 WP_Hook::apply_filters()：
  * 按优先级升序遍历，每个优先级的回调列表在进入该优先级时取快照，
  * 因此"在回调执行中注册到同优先级的回调"不会在本次执行中跑。
+ *
+ * $args 为传给回调的参数（对齐 do_action( $tag, ...$args )）。
+ * 官方有些动作带参数，例如 wp_connectors_init 会传入 WP_Connector_Registry 实例；
+ * 不传参数会导致回调因实参不足而报错。
  */
-function wp_stub_do_action( $tag ) {
+function wp_stub_do_action( $tag, ...$args ) {
     if ( ! isset( $GLOBALS['wp_stub_hooks'][ $tag ] ) ) {
         return;
     }
@@ -76,11 +80,11 @@ function wp_stub_do_action( $tag ) {
             $GLOBALS['wp_stub_fired'][] = $tag;
             try {
                 if ( is_array( $cb ) ) {
-                    call_user_func( $cb );
+                    call_user_func_array( $cb, $args );
                 } elseif ( $cb instanceof Closure ) {
-                    $cb();
+                    call_user_func_array( $cb, $args );
                 } elseif ( is_string( $cb ) && function_exists( $cb ) ) {
-                    $cb();
+                    call_user_func_array( $cb, $args );
                 }
             } catch ( Throwable $e ) {
                 $GLOBALS['wp_stub_errors'][] = sprintf(
@@ -94,7 +98,7 @@ function wp_stub_do_action( $tag ) {
     unset( $GLOBALS['wp_stub_doing'][ $tag ] );
 }
 
-function do_action( $tag ) { wp_stub_do_action( $tag ); }
+function do_action( $tag, ...$args ) { wp_stub_do_action( $tag, ...$args ); }
 function doing_action( $tag ) { return ! empty( $GLOBALS['wp_stub_doing'][ $tag ] ); }
 function did_action( $tag ) { return count( array_keys( $GLOBALS['wp_stub_fired'], $tag, true ) ); }
 
@@ -153,7 +157,9 @@ function add_settings_field( $id, $title, $cb, $page, $section ) {}
 function register_rest_route( $ns, $route, $args = array() ) { return true; }
 function rest_ensure_response( $r ) { return $r; }
 function register_block_type( $path ) { return true; }
-function wp_supports_ai( $feature = null ) { return true; }
+// 官方签名: wp_supports_ai(): bool —— 零参数，无 feature 参数。
+// 受 WP_AI_SUPPORT 常量与 wp_supports_ai 过滤器控制。
+function wp_supports_ai() { return true; }
 function wp_create_nonce( $action = -1 ) { return 'nonce'; }
 function wp_nonce_field( $action = -1, $name = '_wpnonce' ) { return ''; }
 function check_admin_referer( $action = -1, $name = '_wpnonce' ) { return 1; }
@@ -185,6 +191,111 @@ function wp_register_ability_category( $slug, $args = array() ) {
 function wp_has_ability_category( $slug ) { return isset( $GLOBALS['wp_stub_ability_categories'][ $slug ] ); }
 function wp_get_ability_categories() { return $GLOBALS['wp_stub_ability_categories']; }
 
+// ---- Connectors API（WP 7.0+）----
+// 官方: WP_Connector_Registry::register( string $id, array $args )
+//   ID 正则 /^[a-z0-9_-]+$/；重复 ID -> _doing_it_wrong + 返回 null；
+//   type 为 'ai_provider' 且 wp_supports_ai() 为 false -> 直接返回 null（无告警）。
+//   authentication.method 仅接受 api_key / application_password / none。
+$GLOBALS['wp_stub_connectors'] = array();
+
+class WP_Connector_Registry {
+    public static function get_instance() { return new self(); }
+
+    public function is_registered( $id ) { return isset( $GLOBALS['wp_stub_connectors'][ $id ] ); }
+
+    public function register( $id, $args = array() ) {
+        if ( ! preg_match( '/^[a-z0-9_-]+$/', $id ) ) {
+            throw new RuntimeException( '连接器 ID 非法（只允许小写字母数字、连字符、下划线）: ' . $id );
+        }
+        if ( $this->is_registered( $id ) ) {
+            throw new RuntimeException( '连接器 ID 重复注册: ' . $id );
+        }
+        if ( empty( $args['name'] ) || ! is_string( $args['name'] ) ) {
+            throw new RuntimeException( '连接器缺少必填参数 name: ' . $id );
+        }
+        if ( empty( $args['type'] ) || ! is_string( $args['type'] ) ) {
+            throw new RuntimeException( '连接器缺少必填参数 type: ' . $id );
+        }
+        if ( ! isset( $args['authentication'] ) || ! is_array( $args['authentication'] ) ) {
+            throw new RuntimeException( '连接器缺少必填参数 authentication: ' . $id );
+        }
+        $method = $args['authentication']['method'] ?? '';
+        if ( ! in_array( $method, array( 'api_key', 'application_password', 'none' ), true ) ) {
+            throw new RuntimeException(
+                '连接器 authentication.method 必须是 api_key / application_password / none: ' . $id );
+        }
+        // 官方：AI provider 连接器受 wp_supports_ai() 门控，为 false 时静默返回 null。
+        if ( 'ai_provider' === $args['type'] && ! wp_supports_ai() ) {
+            return null;
+        }
+        $connector = array(
+            'name'           => $args['name'],
+            'description'    => isset( $args['description'] ) && is_string( $args['description'] )
+                                ? $args['description'] : '',
+            'type'           => $args['type'],
+            'authentication' => array( 'method' => $method ),
+        );
+        if ( ! empty( $args['logo_url'] ) && is_string( $args['logo_url'] ) ) {
+            $connector['logo_url'] = $args['logo_url'];
+        }
+        if ( in_array( $method, array( 'api_key', 'application_password' ), true ) ) {
+            if ( ! empty( $args['authentication']['credentials_url'] ) ) {
+                $connector['authentication']['credentials_url'] = $args['authentication']['credentials_url'];
+            }
+            // 官方：省略 setting_name 时自动生成为 connectors_{type}_{id}_{method}
+            // （连字符归一化为下划线）。
+            $connector['authentication']['setting_name'] = isset( $args['authentication']['setting_name'] )
+                ? $args['authentication']['setting_name']
+                : str_replace( '-', '_', "connectors_{$connector['type']}_{$id}_{$method}" );
+            foreach ( array( 'constant_name', 'env_var_name' ) as $opt ) {
+                if ( isset( $args['authentication'][ $opt ] ) ) {
+                    $connector['authentication'][ $opt ] = $args['authentication'][ $opt ];
+                }
+            }
+        }
+        $connector['plugin'] = array();
+        if ( ! empty( $args['plugin'] ) && is_array( $args['plugin'] ) ) {
+            if ( ! empty( $args['plugin']['file'] ) ) {
+                $connector['plugin']['file'] = $args['plugin']['file'];
+            }
+            if ( isset( $args['plugin']['is_active'] ) ) {
+                if ( ! is_callable( $args['plugin']['is_active'] ) ) {
+                    throw new RuntimeException( '连接器 plugin.is_active 必须是可调用对象: ' . $id );
+                }
+                $connector['plugin']['is_active'] = $args['plugin']['is_active'];
+            }
+        }
+        if ( ! isset( $connector['plugin']['is_active'] ) ) {
+            $connector['plugin']['is_active'] = '__return_true';
+        }
+        $GLOBALS['wp_stub_connectors'][ $id ] = $connector;
+        return $connector;
+    }
+
+    public function unregister( $id ) {
+        if ( ! $this->is_registered( $id ) ) {
+            throw new RuntimeException( '连接器未注册，无法 unregister: ' . $id );
+        }
+        $c = $GLOBALS['wp_stub_connectors'][ $id ];
+        unset( $GLOBALS['wp_stub_connectors'][ $id ] );
+        return $c;
+    }
+
+    public function get_registered( $id ) {
+        return $GLOBALS['wp_stub_connectors'][ $id ] ?? null;
+    }
+
+    public function get_all_registered() { return $GLOBALS['wp_stub_connectors']; }
+}
+
+function wp_is_connector_registered( $id ) {
+    return isset( $GLOBALS['wp_stub_connectors'][ $id ] );
+}
+function wp_get_connector( $id ) {
+    return $GLOBALS['wp_stub_connectors'][ $id ] ?? null;
+}
+function wp_get_connectors() { return $GLOBALS['wp_stub_connectors']; }
+
 function wp_register_ability( $name, $args = array() ) {
     if ( ! doing_action( 'wp_abilities_api_init' ) ) {
         throw new RuntimeException( 'wp_register_ability 必须在 wp_abilities_api_init 动作中调用' );
@@ -195,7 +306,12 @@ function wp_register_ability( $name, $args = array() ) {
     if ( isset( $args['category'] ) && ! wp_has_ability_category( $args['category'] ) ) {
         throw new RuntimeException( 'ability 分类未注册: ' . $args['category'] );
     }
-    foreach ( array( 'label', 'description', 'execute_callback', 'permission_callback' ) as $req ) {
+    // 官方 WP_Abilities_Registry::register() 文档标注 Required 的参数：
+    // label / description / category / execute_callback / permission_callback。
+    // 注意 category 在官方实现里是 isset() 条件校验（缺失时由 WP_Ability 构造器
+    // 抛 InvalidArgumentException），这里统一按必填处理，提前给出可读错误。
+    foreach ( array( 'label', 'description', 'category',
+                     'execute_callback', 'permission_callback' ) as $req ) {
         if ( empty( $args[ $req ] ) ) {
             throw new RuntimeException( 'ability 缺少必填参数: ' . $req );
         }
@@ -275,25 +391,32 @@ try {
     if ( preg_match( '/([A-Za-z0-9_]+(?:\\\\[A-Za-z0-9_]+)*)\\\\Plugin::class/', file_get_contents( $main ), $m ) ) {
         $ns = $m[1];
     }
+    // 无 Plugin 类的插件（如仅注册连接器/短代码的轻量插件）也要走生命周期，
+    // 否则这些钩子永远不会被触发，存根就测不到它们。
+    $has_plugin_class = false;
     if ( $ns ) {
         $class = $ns . '\\Plugin';
         if ( class_exists( $class ) ) {
+            $has_plugin_class = true;
             // 走真实路径：让 plugins_loaded 钩子自己跑，验证子模块是否真的被引导
             wp_stub_do_action( 'plugins_loaded' );
             echo "[OK] plugins_loaded 已执行\n";
-
-            // 继续走后续生命周期钩子，验证子模块注册的钩子能被触发
-            wp_stub_do_action( 'init' );
-            wp_stub_do_action( 'wp_abilities_api_categories_init' );
-            wp_stub_do_action( 'wp_abilities_api_init' );
-            wp_stub_do_action( 'admin_init' );
-            wp_stub_do_action( 'admin_menu' );
-            wp_stub_do_action( 'rest_api_init' );
-            echo "[OK] 生命周期钩子已执行\n";
         } else {
             $errors[] = "autoloader 未找到类 {$class}";
         }
     }
+
+    // 继续走后续生命周期钩子，验证子模块注册的钩子能被触发
+    wp_stub_do_action( 'init' );
+    // 官方：连接器注册表在 init 优先级 15 初始化，随后 do_action( 'wp_connectors_init', $registry )
+    // 传入注册表实例——回调签名是 function ( WP_Connector_Registry $registry )。
+    wp_stub_do_action( 'wp_connectors_init', WP_Connector_Registry::get_instance() );
+    wp_stub_do_action( 'wp_abilities_api_categories_init' );
+    wp_stub_do_action( 'wp_abilities_api_init' );
+    wp_stub_do_action( 'admin_init' );
+    wp_stub_do_action( 'admin_menu' );
+    wp_stub_do_action( 'rest_api_init' );
+    echo "[OK] 生命周期钩子已执行\n";
 } catch ( Throwable $e ) {
     $errors[] = '未捕获异常: ' . $e->getMessage();
 }
@@ -322,6 +445,10 @@ echo '实际触发的钩子: ' . implode( ', ', array_unique( $GLOBALS['wp_stub_
 
 if ( ! empty( $GLOBALS['wp_stub_abilities'] ) ) {
     echo '已注册 ability: ' . implode( ', ', array_keys( $GLOBALS['wp_stub_abilities'] ) ) . "\n";
+}
+
+if ( ! empty( $GLOBALS['wp_stub_connectors'] ) ) {
+    echo '已注册连接器: ' . implode( ', ', array_keys( $GLOBALS['wp_stub_connectors'] ) ) . "\n";
 }
 
 // ---- 语义校验：子模块的 init 必须真的跑过 ----

@@ -9,6 +9,10 @@
   1e. 非 ASCII（中文）插件名 -> 不同名称生成到不同目录（不冲突）
   1f. 子模块引导 -> 直接调用 init()，不在 plugins_loaded 内重复 add_action
   1g. 运行时冒烟（WordPress 存根真正执行钩子）-> autoloader/namespace/钩子/子模块
+  1h. 存根对快照陷阱的诊断能力（负向夹具）
+  1i. AI 桩注册语义：分类方法先于 ability 方法、两者挂在正确钩子上
+  1j. 文档事实准确性 -> 连接器 ID / 零参数签名 / 7.1 过滤器 / REST 端点 / MCP 非核心
+  1k. references 全部 PHP 代码块 php -l 通过（片段包入类中校验）
   2. 扫描器对干净产出 -> HIGH=0 且 MEDIUM=0
   3. 扫描器对恶意夹具 -> exit=1、HIGH>=8、威胁类别全覆盖
   4. 扫描器污点传播 -> 两段式 SQL / LFI / 回调 / 反序列化 可捕获
@@ -501,6 +505,39 @@ def main() -> int:
                         f"{dirname}: exit={r3.returncode} 期望含 {expect!r}")
             check("存根能诊断出 ability 分类未注册 / 注册钩子错误", ai_ok,
                   "; ".join(ai_detail) if ai_detail else "两类错误均被拦下")
+
+            # ---- 测试 1i2: 存根必须能诊断出连接器注册错误 ----
+            # 官方 WP_Connector_Registry::register() 对重复 ID / 非法 ID /
+            # 非法认证方式都会 _doing_it_wrong 并返回 null。存根必须拦下，
+            # 否则插件会以为自己注册成功了。
+            conn_dir = tmp / "conn-plugin"
+            (conn_dir / "src").mkdir(parents=True)
+            (conn_dir / "src" / "autoload.php").write_text(
+                "<?php\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n", encoding="utf-8")
+            (conn_dir / "conn-plugin.php").write_text(
+                "<?php\n/**\n * Plugin Name: Conn Fixture\n */\n"
+                "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+                "define( 'CONN_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );\n"
+                "add_action( 'wp_connectors_init', function ( $registry ) {\n"
+                "    $registry->register( 'dup_connector', array(\n"
+                "        'name' => __( 'Dup', 'conn-fixture' ),\n"
+                "        'type' => 'content_sync',\n"
+                "        'authentication' => array( 'method' => 'api_key' ),\n"
+                "    ) );\n"
+                "    // 重复 ID：官方会 _doing_it_wrong 并返回 null\n"
+                "    $registry->register( 'dup_connector', array(\n"
+                "        'name' => __( 'Dup Again', 'conn-fixture' ),\n"
+                "        'type' => 'content_sync',\n"
+                "        'authentication' => array( 'method' => 'api_key' ),\n"
+                "    ) );\n"
+                "} );\n",
+                encoding="utf-8")
+            r4 = subprocess.run([php, str(STUB), str(conn_dir / "conn-plugin.php")],
+                                capture_output=True, text=True, encoding="utf-8",
+                                errors="replace")
+            check("存根能诊断出连接器重复注册",
+                  r4.returncode == 1 and "重复注册" in r4.stdout,
+                  (r4.stdout.strip().splitlines() or ["无输出"])[-1][:80])
         else:
             skip("运行时冒烟通过（autoloader/namespace/钩子）", "未检测到 PHP CLI")
             skip("plugins_loaded 钩子被真实执行", "未检测到 PHP CLI")
@@ -508,6 +545,108 @@ def main() -> int:
             skip("abilities 分类与 ability 注册路径被真实执行", "未检测到 PHP CLI")
             skip("存根能诊断出 plugins_loaded 快照陷阱（子模块永不执行）", "未检测到 PHP CLI")
             skip("存根能诊断出 ability 分类未注册 / 注册钩子错误", "未检测到 PHP CLI")
+            skip("存根能诊断出连接器重复注册", "未检测到 PHP CLI")
+
+        # ---- 测试 1j: 文档事实准确性（对照官方文档核实过的硬事实）----
+        #
+        # 背景：第 8 轮审查发现参考文档里存在多处与官方不符的表述
+        # （连接器 ID 写成 core/openai、声称 wp_get_connector() 返回 base_url、
+        #  wp_supports_ai() 被当成带 feature 参数等）。
+        # 这类错误不会让任何测试失败——文档照常渲染、代码照常生成——
+        # 所以必须用显式断言把"已核实的事实"钉住，防止回退。
+        ai_ref = (SCRIPTS.parent / "references" / "ai-client-connectors-abilities.md")
+        skill_md = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+        if ai_ref.is_file():
+            ai_text = ai_ref.read_text(encoding="utf-8")
+            # 1) 内置连接器 ID 官方为 anthropic / google / openai（无任何前缀）。
+            #    "core/openai" 这类写法会让插件查不到连接器。
+            check("文档载明内置连接器 ID（anthropic/google/openai，无前缀）",
+                  all(f"`{cid}`" in ai_text for cid in ("anthropic", "google", "openai"))
+                  and not re.search(r"core/(?:openai|claude|gemini|anthropic|google)", ai_text),
+                  "core/ 前缀写法已清除")
+            # 2) wp_get_connector() 只返回元数据，没有 base_url / 明文密钥
+            check("文档未声称 wp_get_connector() 返回 base_url",
+                  "base_url（已解密）" not in ai_text and "返回凭证与 base_url" not in ai_text,
+                  "")
+            # 3) wp_supports_ai() 是零参数函数
+            check("文档载明 wp_supports_ai() 为零参数",
+                  "零参数" in ai_text, "")
+            # 4) WP 7.1 新增的 4 个执行生命周期过滤器
+            missing_filters = [f for f in ("wp_pre_execute_ability", "wp_ability_normalize_input",
+                                            "wp_ability_permission_result", "wp_ability_execute_result")
+                               if f not in ai_text]
+            check("文档载明 WP 7.1 新增的 4 个执行生命周期过滤器",
+                  not missing_filters, f"缺: {missing_filters}")
+            # 5) Abilities REST 端点 + HTTP 方法由 annotations 决定
+            check("文档载明 Abilities REST 端点与 annotations 决定的 HTTP 方法",
+                  "wp-abilities/v1" in ai_text and "readonly" in ai_text
+                  and "DELETE" in ai_text and "POST" in ai_text, "")
+            # 6) MCP Adapter 是独立包，不在核心里
+            check("文档载明 MCP Adapter 为独立包（非核心）",
+                  "mcp-adapter" in ai_text and "独立包" in ai_text, "")
+            # 7) 连接器认证方式三种取值 + 常量/环境变量来源 + plugin 子键
+            check("文档载明连接器认证三种取值与 constant_name/env_var_name/plugin 子键",
+                  "application_password" in ai_text and "constant_name" in ai_text
+                  and "env_var_name" in ai_text and "is_active" in ai_text, "")
+            # 8) ai_provider + AI 被禁用时 register 静默返回 null
+            check("文档载明 ai_provider 在 AI 禁用时静默返回 null",
+                  "静默返回" in ai_text and "ai_provider" in ai_text, "")
+            # 9) SKILL.md 的版本事实与"MCP 非核心"表述
+            check("SKILL.md 载明 7.1.3 为安全版本且 MCP Adapter 非核心",
+                  "7.1.3" in skill_md and "安全版本" in skill_md and "独立包" in skill_md, "")
+        else:
+            check("文档载明内置连接器 ID（anthropic/google/openai，无前缀）",
+                  False, "ai-client-connectors-abilities.md 不存在")
+
+        # ---- 测试 1k: references 全部 PHP 代码块语法合法 ----
+        # 文档里的代码块会被读者直接复制走，语法错误等于制造 bug。
+        # 方法体片段（只有方法、没有类包装）包进类里再校验。
+        if php:
+            refs_dir = SCRIPTS.parent / "references"
+            ref_fail = []
+            ref_count = 0
+            for md in sorted(refs_dir.glob("*.md")):
+                md_text = md.read_text(encoding="utf-8")
+                for idx, code in enumerate(re.findall(r"```php\n(.*?)```", md_text, re.S), 1):
+                    ref_count += 1
+                    body = code.strip()
+                    if not body:
+                        continue
+                    src = body if body.startswith("<?php") else "<?php\n" + body
+                    if not re.search(r"^\s*(class|interface|trait|enum)\s+\w", body, flags=re.M) \
+                            and re.search(r"^\s*(public|private|protected|static|function)\b", body, flags=re.M):
+                        src = "<?php\nclass __Fragment {\n" + body + "\n}\n"
+                    frag = tmp / f"ref_{md.stem}_{idx}.php"
+                    frag.write_text(src, encoding="utf-8")
+                    rr = subprocess.run([php, "-l", str(frag)], capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace")
+                    if rr.returncode != 0:
+                        ref_fail.append(f"{md.name}#{idx}")
+            check("references 全部 PHP 代码块 php -l 通过",
+                  not ref_fail and ref_count > 0,
+                  f"失败: {ref_fail[:3]}" if ref_fail else f"{ref_count} 块全部通过")
+        else:
+            skip("references 全部 PHP 代码块 php -l 通过", "未检测到 PHP CLI")
+
+        # ---- 测试 1l: 全部文件编码完整（无替换字符 / 非 UTF-8）----
+        # 中文注释在批量编辑时可能被截断成 U+FFFD 替换字符，
+        # 肉眼很难发现，但会污染交付物。用显式扫描兜住。
+        enc_bad = []
+        for f in sorted(SCRIPTS.parent.rglob("*")):
+            if f.is_dir() or "__pycache__" in f.parts or f.suffix == ".pyc":
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                enc_bad.append(f"{f.relative_to(SCRIPTS.parent)}: 非 UTF-8")
+                continue
+            for ln, line in enumerate(text.splitlines(), 1):
+                if "\ufffd" in line:
+                    enc_bad.append(
+                        f"{f.relative_to(SCRIPTS.parent)}:{ln} 含替换字符")
+                    break
+        check("全部文件编码完整（无 U+FFFD 替换字符）",
+              not enc_bad, "; ".join(enc_bad[:3]) if enc_bad else "无损坏字符")
 
         # ---- 测试 2: 扫描器对干净产出 ----
         summary, _ = scan_json(plugin_dir)

@@ -23,7 +23,7 @@ jobs:
         run: python -m py_compile wordpress-plugin-dev/scripts/*.py
       - name: PHP 可用性（ubuntu 镜像预装，缺失则自测自动跳过语法断言）
         run: php -v
-      - name: 运行技能自测（31 项断言）
+      - name: 运行技能自测（43 项断言）
         run: python wordpress-plugin-dev/scripts/self_test.py
 
   scaffold-php-lint:

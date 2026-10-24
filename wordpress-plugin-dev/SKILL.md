@@ -1,6 +1,6 @@
 ---
 name: wordpress-plugin-dev
-version: 1.2.0
+version: 1.3.0
 description: WordPress 插件开发、审查、加固与发布技能。当任务涉及 WordPress 插件/主题代码（plugin.php、wp-content/plugins、add_action/add_filter、register_setting、wp_remote_*、admin-ajax、REST 路由、block.json、Gutenberg 块、WP 7.0+ AI Client / Connectors API / Abilities API、wp_register_ability、wp_ai_client_prompt、readme.txt 提交 wordpress.org）时使用。覆盖：新建插件脚手架、功能实现、代码审查、安全审计（nonce/capability/净化/转义）、性能优化、AI 功能集成、发布前检查。WordPress plugin development, security audit, Gutenberg, REST API, AI Client, Abilities API.
 author: xhl-skills
 license: MIT
@@ -16,9 +16,14 @@ agent_created: true
 
 ## 版本基线（2026-10-24 核实）
 
-- 最新正式版 **WordPress 7.1.3**（2026-10-06）；**7.2** 处于 Beta（2026-12-08 发布），Beta/RC 期是提反馈的窗口
-- 目标环境：WordPress **7.0+**，PHP **8.1+**（建议 8.2+）
-- WP 7.0 起的核心新基础设施：**AI Client**（`wp_ai_client_prompt()`）、**Connectors API**（Settings > Connectors 统一管理 API Key）、**Abilities API**（`wp_register_ability()`，6.9/7.0 引入，7.1 增加统一 `meta.public` 暴露标志）、**MCP Adapter**（把 Ability 暴露为 MCP 工具）
+- 最新正式版 **WordPress 7.1.3**（2026-10-06 发布，**安全版本**，含 7 项安全修复——存储型 XSS、WXR 导出二阶 SQL 注入、未认证的私有/草稿评论泄露、`WP_Http::make_absolute_url()` DoS、Author 角色可置顶文章、Imgur oEmbed XSS、动态钩子名碰撞）。做兼容性测试时以此为基线
+- **7.2** 处于 Beta（Beta 1 已于 2026-10 发布，最终发布日定为 **2026-12-08**）；Beta/RC 期是提反馈的窗口，插件作者应提前跑一遍 beta 回归
+- 目标环境：WordPress **7.0+**，PHP **8.1+**（建议 8.2+）。注意 WP 7.0 起最低 PHP 要求为 **7.4**（已弃用 7.2/7.3）
+- WP 7.0 起的核心新基础设施：
+  - **AI Client**（`wp_ai_client_prompt()`，7.0）
+  - **Connectors API**（Settings > Connectors 统一管理 API Key，7.0）
+  - **Abilities API**（`wp_register_ability()`，**服务端 6.9 引入**，7.0 增加 JS 客户端，**7.1 增加统一 `meta.public` 暴露标志 + 4 个执行生命周期过滤器**）
+  - **MCP Adapter**（把 Ability 暴露为 MCP 工具）——**独立包，不是核心的一部分**
 - 7.2 预告（可能影响插件）：`wp_kses()` 基于 HTML API 重建、Application Passwords 改进、Secrets API（CLI-only，试验性）
 - 写任何版本相关代码前，先 WebSearch 核实当时的最新版本与弃用情况；官方文档以 developer.wordpress.org 为准
 - 版本保鲜：运行 `scripts/check_wp_versions.py`（查询 api.wordpress.org，与上述基线比对；离线时静默跳过）
@@ -63,7 +68,7 @@ agent_created: true
 4. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
 5. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
 6. 发布类任务额外跑 `release-and-quality.md` 的清单
-7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（31 项断言，含杀软环境韧性）
+7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（43 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
@@ -97,14 +102,14 @@ agent_created: true
 - `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、**污点传播**（超全局 → 变量 → `$wpdb->`/include/call_user_func/unserialize/文件写入）、SQL 拼接（含 `prepare()` 格式串插值）、缺失 nonce/capability、`wp_ajax_nopriv_`、`__return_true` 权限回调、REST 缺 `permission_callback`、短代码未转义、隐藏文件、外联域名清单，输出分级报告（`base64_decode`/`file_put_contents`/`move_uploaded_file` 等常见合法用法仅作提示级报告，不判 HIGH）
 - `check_php_syntax.py` — PHP CLI 探测 + `php -l`（无 PHP 时优雅跳过）
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
-- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
-- `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并**真正执行** `plugins_loaded`/`init`/`rest_api_init`/`admin_*`/`wp_abilities_api_*` 钩子，验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册与回调执行；并能诊断"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')`"导致子模块永不执行的致命模式（`php -l` 只管语法，这个管运行时）
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、ability 与连接器注册语义、**文档事实准确性核对**（连接器 ID / 零参数签名 / WP 7.1 过滤器 / REST 端点 / MCP 非核心）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 替换字符检查）**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
+- `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并**真正执行** `plugins_loaded`/`init`/`rest_api_init`/`admin_*`/`wp_abilities_api_*`/`wp_connectors_init` 钩子（**带参动作钩子会正确传入回调参数**，如 `wp_connectors_init` 传注册表实例），验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册与回调执行；并能诊断三类致命模式——"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')`"导致子模块永不执行、ability 分类未注册/挂错钩子、连接器重复注册（`php -l` 只管语法，这个管运行时）
 
 ### references/
 - `plugin-fundamentals.md` — 头部字段全集、目录规范、加载顺序、激活/停用/卸载、autoload、版本号陷阱
 - `hooks-and-core-apis.md` — Hooks API 与常用核心 API（Options/Settings/HTTP/Metadata/CPT/Taxonomy/Cron/短代码/菜单/Ajax/i18n）
 - `security-checklist.md` — 安全审查清单、净化/转义函数表、漏洞模式速查
-- `ai-client-connectors-abilities.md` — WP 7.x AI 三件套：AI Client 流式 API、Connectors 注册与消费、Abilities 注册与暴露、MCP Adapter
+- `ai-client-connectors-abilities.md` — WP 7.x AI 三件套：AI Client 流式 API（snake_case builder + camelCase 结果对象）、Connectors 注册与消费（**内置 ID 为 `anthropic`/`google`/`openai`，无前缀**）、Abilities 注册与暴露（REST 端点、annotations 决定 HTTP 方法、WP 7.1 生命周期过滤器）、MCP Adapter（**独立包，非核心**）
 - `gutenberg-and-frontend.md` — block.json、@wordpress/scripts、资源入队、弃用处理、Interactivity API 入门
 - `release-and-quality.md` — WPCS、Plugin Check、PHPStan、测试（wp-env/PHPUnit）、wordpress.org 提交清单
 
@@ -131,6 +136,8 @@ agent_created: true
 | REST 401/403 | `permission_callback` 过严；cookie nonce 未传（`X-WP-Nonce`） |
 | **ability 注册无效（返回 null / 控制台报 doing_it_wrong）** | `category` 指向的分类未先用 `wp_register_ability_category()` 注册；或不在 `wp_abilities_api_init` 动作内调用 `wp_register_ability()` |
 | **ability 静默消失（不报错，但调用时不存在）** | 三种注册错误都不会让插件 fatal，只是安静地少一个 ability：①分类从未注册 ②分类挂到了 `wp_abilities_api_init`（应为 `wp_abilities_api_categories_init`）③`category` slug 指向未注册分类。按"分类已注册 → 动作正确 → 必填参数齐全 → slug 正则"顺序逐个排除，用 `wp_has_ability_category()` / `wp_has_ability()` 自检 |
+| **连接器查不到（`wp_is_connector_registered()` 恒为 false）** | 内置连接器 ID 是 `anthropic` / `google` / `openai`（**无 `core/` 前缀**）；`core/openai` 之类的写法永远查不到。另外 `type` 为 `ai_provider` 且 `wp_supports_ai()` 为 false 时 `register()` 会**静默返回 null** |
+| **连接器密钥取不到** | `wp_get_connector()` 只返回**元数据**（name/description/type/authentication/plugin），**不含 base_url 也不含明文密钥**；密钥要按 `authentication.setting_name` / `constant_name` / `env_var_name` 自行读取，优先级为 环境变量 → PHP 常量 → 数据库 |
 | **AI 调用返回 WP_Error / 调用到不存在的方法** | `generate_text()` 返回 `string\|WP_Error`；取元数据用 `generate_text_result()` + `toText()`（camelCase），**不是** `get_text()`；站点未配置 Connector 时用 `is_supported_for_text_generation()` 先探测 |
 | CPT 404 | 激活时未 `flush_rewrite_rules()`，或正常请求里刷了（性能反模式） |
 | "Invalid block" | 属性结构变更未写 `deprecated` 迁移 |

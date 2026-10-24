@@ -1,6 +1,6 @@
 ---
 name: wordpress-plugin-dev
-version: 1.1.0
+version: 1.2.0
 description: WordPress 插件开发、审查、加固与发布技能。当任务涉及 WordPress 插件/主题代码（plugin.php、wp-content/plugins、add_action/add_filter、register_setting、wp_remote_*、admin-ajax、REST 路由、block.json、Gutenberg 块、WP 7.0+ AI Client / Connectors API / Abilities API、wp_register_ability、wp_ai_client_prompt、readme.txt 提交 wordpress.org）时使用。覆盖：新建插件脚手架、功能实现、代码审查、安全审计（nonce/capability/净化/转义）、性能优化、AI 功能集成、发布前检查。WordPress plugin development, security audit, Gutenberg, REST API, AI Client, Abilities API.
 author: xhl-skills
 license: MIT
@@ -59,11 +59,11 @@ agent_created: true
 
 1. 运行 `scripts/wp_security_scan.py <插件目录>`，修正所有 HIGH/MEDIUM 发现
 2. 有 PHP CLI 时运行 `scripts/check_php_syntax.py`（无 PHP 则跳过并告知用户）；**带命名空间的类文件必须过 `php -l`**——ABSPATH 守卫若写在 `namespace` 之前会直接 Fatal（见 `plugin-fundamentals.md` 的位置陷阱）
-3. 新建插件或改动加载链路时，用 `scripts/wp_stub.php <主文件>` 做运行时冒烟：验证 autoloader 能定位类、子命名空间能解析、钩子按预期注册（纯语法检查覆盖不到这些）
+3. 新建插件或改动加载链路时，用 `scripts/wp_stub.php <主文件>` 做运行时冒烟：验证 autoloader 能定位类、子命名空间能解析、钩子按预期注册，**以及钩子回调真的被触发**（纯语法检查覆盖不到这些）
 4. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
 5. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
 6. 发布类任务额外跑 `release-and-quality.md` 的清单
-7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（16 项断言，含杀软环境韧性）
+7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（31 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
@@ -72,7 +72,7 @@ agent_created: true
 - 把请求数据、选项、meta、短代码属性、REST 载荷、第三方响应全部视为不可信输入
 - 输入侧 sanitize（`sanitize_text_field`、`absint`、`sanitize_key`、`wp_kses`…），输出侧按上下文 escape（`esc_html`、`esc_attr`、`esc_url`、`wp_kses_post`…）；"先净化再校验"优于"只净化"
 - 每条 REST 路由必须给真实的 `permission_callback`；绝不用 `__return_true` 公开敏感数据
-- SQL 一律 `$wpdb->prepare()`；不拼接用户输入
+- SQL 一律 `$wpdb->prepare()`；不拼接用户输入（`prepare()` 的**格式串**里插值变量同样等于拼接，必须用 `%s` 占位符传参）
 - 禁止 `eval`、`assert`、`create_function`、`preg_replace` 的 /e、`base64_decode` 执行、`exec`/`shell_exec`/`system`/`proc_open`、`extract($_GET)`、`unserialize($_POST)`、`move_uploaded_file` 处理未校验上传
 - 所有 PHP 文件顶部 `if ( ! defined( 'ABSPATH' ) ) exit;`
 
@@ -93,12 +93,12 @@ agent_created: true
 ## Resources
 
 ### scripts/
-- `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码；自动防护命名空间/常量名以数字开头、单引号断裂、头部注释注入等边界输入）
-- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、SQL 拼接、缺失 nonce/capability、`__return_true` 权限回调、REST 缺 `permission_callback`、无 nonce 的 wp_ajax 处理器、隐藏文件、外联域名清单，输出分级报告（对 base64_decode/file_put_contents/parse_str 等常见合法用法仅作提示级报告，不判 HIGH）
+- `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码；自动防护命名空间/常量名以数字开头、单引号断裂、头部注释注入、非 ASCII 名 slug 冲突等边界输入）
+- `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、**污点传播**（超全局 → 变量 → `$wpdb->`/include/call_user_func/unserialize/文件写入）、SQL 拼接（含 `prepare()` 格式串插值）、缺失 nonce/capability、`wp_ajax_nopriv_`、`__return_true` 权限回调、REST 缺 `permission_callback`、短代码未转义、隐藏文件、外联域名清单，输出分级报告（`base64_decode`/`file_put_contents`/`move_uploaded_file` 等常见合法用法仅作提示级报告，不判 HIGH）
 - `check_php_syntax.py` — PHP CLI 探测 + `php -l`（无 PHP 时优雅跳过）
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
-- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、运行时冒烟、干净/恶意双夹具扫描断言、脚本退出码与降级路径回归；CI 可直接运行
-- `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并调用 `init()`，验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册（`php -l` 只管语法，这个管运行时）
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
+- `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并**真正执行** `plugins_loaded`/`init`/`rest_api_init`/`admin_*`/`wp_abilities_api_*` 钩子，验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册与回调执行；并能诊断"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')`"导致子模块永不执行的致命模式（`php -l` 只管语法，这个管运行时）
 
 ### references/
 - `plugin-fundamentals.md` — 头部字段全集、目录规范、加载顺序、激活/停用/卸载、autoload、版本号陷阱
@@ -124,10 +124,14 @@ agent_created: true
 | 症状 | 常见原因 |
 |---|---|
 | 激活钩子不触发 | 钩子注册位置不在主文件作用域；多站点网络激活；`register_activation_hook` 路径错 |
+| **插件能激活但 REST/设置页/块/ability 全部不出现** | **在 `plugins_loaded` 回调内部又 `add_action('plugins_loaded', ...)`——WP_Hook 遍历同优先级的回调快照，同优先级新注册的回调本次不执行，子模块 `init()` 永不运行。改为在 `Plugin::init()` 里直接调用子模块 `init()`** |
 | 设置保存无效 | `register_setting` 的 group 与 `settings_fields()` 不一致；capability 不足；nonce 校验失败 |
 | 卸载后数据残留 | uninstall.php 缺 `WP_UNINSTALL_PLUGIN` 守卫被跳过；多站点未循环 `get_sites()` |
 | Ajax 返回 -1/0 | `check_ajax_referer` 失败（nonce 过期/action 名不符）或 `wp_ajax_{action}` 未注册 |
 | REST 401/403 | `permission_callback` 过严；cookie nonce 未传（`X-WP-Nonce`） |
+| **ability 注册无效（返回 null / 控制台报 doing_it_wrong）** | `category` 指向的分类未先用 `wp_register_ability_category()` 注册；或不在 `wp_abilities_api_init` 动作内调用 `wp_register_ability()` |
+| **ability 静默消失（不报错，但调用时不存在）** | 三种注册错误都不会让插件 fatal，只是安静地少一个 ability：①分类从未注册 ②分类挂到了 `wp_abilities_api_init`（应为 `wp_abilities_api_categories_init`）③`category` slug 指向未注册分类。按"分类已注册 → 动作正确 → 必填参数齐全 → slug 正则"顺序逐个排除，用 `wp_has_ability_category()` / `wp_has_ability()` 自检 |
+| **AI 调用返回 WP_Error / 调用到不存在的方法** | `generate_text()` 返回 `string\|WP_Error`；取元数据用 `generate_text_result()` + `toText()`（camelCase），**不是** `get_text()`；站点未配置 Connector 时用 `is_supported_for_text_generation()` 先探测 |
 | CPT 404 | 激活时未 `flush_rewrite_rules()`，或正常请求里刷了（性能反模式） |
 | "Invalid block" | 属性结构变更未写 `deprecated` 迁移 |
 | 安全回归 | nonce 有但 capability 漏；输入净化了但输出未转义 |

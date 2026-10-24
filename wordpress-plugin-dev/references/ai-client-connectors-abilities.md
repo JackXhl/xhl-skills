@@ -19,8 +19,11 @@ echo wp_kses_post( $text );
 常用方法：
 - 选项：`using_temperature()`、`using_max_tokens()`、`using_top_p()`、`as_json_response( $schema )`（结构化输出）、`using_model_preference( 'model-a', 'model-b' )`（偏好非要求，按站点可用模型降级）
 - 生成：`generate_text()` / `generate_texts( $n )` / `generate_image()` / `generate_images( $n )` / `generate_video()` / `convert_text_to_speech()` / `generate_speech()`
-- 带元数据结果：`generate_text_result()` 等返回 `GenerativeAiResult`（`getTokenUsage()`、`getProviderMetadata()`、`getModelMetadata()`）；可序列化，可直接 `rest_ensure_response( $result )`
+- **返回值类型（易错点）**：
+  - `generate_text()` 返回 `string|WP_Error`
+  - `generate_text_result()` 返回 `GenerativeAiResult|WP_Error`，其取文本的方法是 **`toText()`**（camelCase），另有 `toTexts()`、`toImageFile()`、`getTokenUsage()`、`getProviderMetadata()`、`getModelMetadata()`——**没有 `get_text()` 这个方法**，写成 snake_case 会直接 Fatal
 - **特性探测（不发请求）**：`$builder->is_supported_for_text_generation()` / 对应 image/vision 方法。展示 AI UI 前先探测
+- **阻断提示**：`wp_ai_client_prevent_prompt` 过滤器可阻止提示词执行（返回 `true` 即阻止）；被阻止时 `is_supported_*()` 返回 `false`，生成方法返回 `WP_Error`
 
 模型来源：站点管理员在 **Settings > Connectors** 配置的官方 provider 插件（OpenAI / Anthropic / Google，以及第三方如国内五家连接器）。插件不自己存 Key、不自己写 HTTP 客户端。
 
@@ -52,27 +55,68 @@ add_action( 'wp_connectors_init', function ( WP_Connector_Registry $registry ): 
 
 ## 3. Abilities API（把功能注册为机器可调用能力）
 
+**注册三步缺一不可**（漏任何一步都会静默失败或报 `_doing_it_wrong`）：
+
+1. 分类必须**先**注册（`wp_abilities_api_categories_init` 动作）
+2. `wp_register_ability()` 必须在 `wp_abilities_api_init` 动作内调用——否则返回 `null` 并触发 `_doing_it_wrong`
+3. `execute_callback` 与 `permission_callback` 都是**必填**
+
 ```php
+// 第 1 步：注册分类（slug 只允许小写字母数字与连字符）
+add_action( 'wp_abilities_api_categories_init', function (): void {
+    wp_register_ability_category( 'my-plugin', array(
+        'label'       => __( 'My Plugin', 'my-plugin' ),
+        'description' => __( 'Abilities provided by My Plugin.', 'my-plugin' ),
+    ) );
+} );
+
+// 第 2 步：注册 ability
 add_action( 'wp_abilities_api_init', function (): void {
     wp_register_ability( 'my-plugin/export-posts', array(
-        'label'             => __( 'Export posts', 'my-plugin' ),
-        'description'       => __( 'Exports posts as CSV.', 'my-plugin' ),
-        'category'          => 'data-export',   // 先用 wp_register_ability_category 注册
-        'input_schema'      => array( 'type' => 'object', 'properties' => array( /* JSON Schema draft-4 子集 */ ), 'required' => array() ),
-        'output_schema'     => array( 'type' => 'string' ),
-        'execute_callback'  => 'my_plugin_export_posts',   // 返回结果或 WP_Error
-        'permission_callback' => function (): bool { return current_user_can( 'export' ); },
-        'meta'              => array( 'public' => true ),  // 7.1 起统一暴露标志
+        'label'               => __( 'Export posts', 'my-plugin' ),
+        'description'         => __( 'Exports posts as CSV.', 'my-plugin' ),
+        'category'            => 'my-plugin',        // 必须已注册，否则注册失败
+        'input_schema'        => array(
+            'type'        => 'string',
+            'description' => __( 'The text to be analyzed.', 'my-plugin' ),
+            'minLength'   => 10,
+            'required'    => true,                  // 顶层标记，不是 properties 内某个字段的
+        ),
+        'output_schema'       => array(
+            'type' => 'string',
+        ),
+        'execute_callback'    => 'my_plugin_export_posts',
+        'permission_callback' => function (): bool { return current_user_can( 'edit_posts' ); },
+        'meta'                => array(
+            'annotations' => array( 'readonly' => true ),
+            'public'      => true,                   // 7.1 起统一暴露标志
+        ),
     ) );
 } );
 ```
 
-- 命名：`vendor/ability`，全小写 + 连字符；分类在 `wp_abilities_api_categories_init` 注册
+- 命名：`vendor/ability`，只允许小写字母数字、连字符与斜杠（正则 `^[a-z0-9-]+/[a-z0-9-]+$`）；分类 slug 正则 `^[a-z0-9]+(?:-[a-z0-9]+)*$`
 - input/output schema 用 JSON Schema（WP 实现 draft-04 子集，参考 REST schema 文档）；有入参/返回值时 schema 是强制的
 - **`meta.public`（WP 7.1）**：统一对外暴露意图，REST 生效规则 `show_in_rest ?? public ?? false`；MCP Adapter 从新版起尊重该标志
 - **暴露 ≠ 授权**：`public` 只管可发现性，执行仍必须过 `permission_callback`，永远用真实 capability
 - 调用：`WP_Ability::execute()`（支持 ability 组合，一个 ability 调另一个）
 - 官方参考：`developer.wordpress.org/reference/functions/wp_register_ability/`；官方 AI 插件（wordpress.org 搜 "AI"）内含 Alt Text、摘要等大量 ability 实现可作范例
+
+### 三类注册错误的排查顺序
+
+**注册错了不会让插件 fatal，只是安静地少一个 ability**——站点照常运行、前台无异常，只有调用该 ability 时才发现"不存在"。因此排查要按下面的顺序逐个排除：
+
+| 症状 | 根因 | 判定方式 |
+|---|---|---|
+| 分类未注册 | `wp_register_ability_category()` 没调，或挂在 `wp_abilities_api_init`（错钩子） | 分类必须挂在 `wp_abilities_api_categories_init` |
+| ability 注册返回 `null` | `wp_register_ability()` 不在 `wp_abilities_api_init` 动作内 | 严格用 `doing_action( 'wp_abilities_api_init' )` 自检 |
+| ability 完全查不到 | 上面任一错误，或 `category` 指向未注册的 slug | 先 `wp_has_ability_category()` 再 `wp_has_ability()` |
+
+**自查顺序**：先确认分类已注册 → 再确认 ability 挂在正确动作 → 再确认必填参数齐全 → 最后看 slug/name 正则。
+
+> `scripts/wp_stub.php` 存根已内置这三类校验：分类未注册、分类挂错钩子都会直接 `exit 1` 并打印原因；`scripts/self_test.py` 中有对应的负向夹具回归，保证存根本身不会"永远通过"。
+>
+> 注意 `wp_register_ability_category(` 是 `wp_register_ability(` 的**前缀**，写静态检查脚本时若用 `strpos()` 找首次出现位置会命中错误位置（注释里的这两个词也会干扰）；必须先剥离注释，再按**方法定义顺序**比较。
 
 ## 4. MCP Adapter
 

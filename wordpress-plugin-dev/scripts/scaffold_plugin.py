@@ -3,13 +3,13 @@
 
 用法:
     python scaffold_plugin.py --name "My Plugin" [--path D:/wp-content/plugins]
-        [--author "Your Name"] [--author-uri https://example.com]
+        [--slug my-plugin] [--author "Your Name"] [--author-uri https://example.com]
         [--with-settings] [--with-rest] [--with-blocks] [--with-ai]
 
 生成内容:
     {slug}/{slug}.php          主文件（完整 header + ABSPATH 守卫 + 引导）
     {slug}/src/autoload.php     PSR-4 自动加载
-    {slug}/src/Plugin.php       主类（hooks 注册）
+    {slug}/src/Plugin.php       主类（子模块引导）
     {slug}/src/Activator.php    激活逻辑
     {slug}/src/Deactivator.php  停用逻辑
     {slug}/uninstall.php        卸载清理（WP_UNINSTALL_PLUGIN 守卫）
@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import sys
@@ -41,6 +42,7 @@ def ensure_utf8_stdout() -> None:
             except (ValueError, OSError):
                 pass
 
+
 HEADER = """<?php
 /**
  * Plugin Name:       {name}
@@ -53,7 +55,6 @@ HEADER = """<?php
  * Author URI:        {author_uri}
  * License:           GPL v2 or later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
- * Update URI:        {plugin_uri}
  * Text Domain:       {slug}
  * Domain Path:       /languages
  *
@@ -118,8 +119,7 @@ class Plugin {{
 
     public static function init(): void {{
         load_plugin_textdomain( '{slug}', false, dirname( plugin_basename( __FILE__ ), 2 ) . '/languages' );
-{hooks}
-    }}
+{submodule_calls}    }}
 }}
 """
 
@@ -165,6 +165,7 @@ if ( ! defined( 'ABSPATH' ) ) {{
 class Deactivator {{
 
     public static function deactivate(): void {{
+        // 仅在你确实调度过定时任务时保留这两行；否则删除。
         wp_clear_scheduled_hook( '{slug}_cron_event' );
         flush_rewrite_rules();
     }}
@@ -184,12 +185,14 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {{
 
 // 单站点
 delete_option( '{slug}_version' );
+delete_option( '{slug}_option' );
 
 // 多站点循环（按需启用）
 // $sites = get_sites( array( 'fields' => 'ids' ) );
 // foreach ( $sites as $site_id ) {{
 //     switch_to_blog( $site_id );
 //     delete_option( '{slug}_version' );
+//     delete_option( '{slug}_option' );
 //     restore_current_blog();
 // }}
 """
@@ -228,18 +231,28 @@ class SettingsPage {{
         add_settings_field( '{slug}_api_key', __( 'API Key', '{slug}' ), array( self::class, 'field_api_key' ), '{slug}', '{slug}_main' );
     }}
 
-    public static function sanitize( array $input ): array {{
+    /**
+     * 净化设置值：只保留已知键，逐值净化。
+     *
+     * @param mixed $input 提交的原始值（可能是数组，也可能是标量）。
+     * @return array
+     */
+    public static function sanitize( $input ): array {{
+        if ( ! is_array( $input ) ) {{
+            return array();
+        }}
         return array(
-            'api_key' => sanitize_text_field( $input['api_key'] ?? '' ),
+            'api_key' => isset( $input['api_key'] ) ? sanitize_text_field( $input['api_key'] ) : '',
         );
     }}
 
     public static function field_api_key(): void {{
         $option = get_option( '{slug}_option', array() );
+        $value  = is_array( $option ) && isset( $option['api_key'] ) ? $option['api_key'] : '';
         printf(
             '<input type="password" class="regular-text" name="%1$s[api_key]" value="%2$s" />',
             esc_attr( '{slug}_option' ),
-            esc_attr( $option['api_key'] ?? '' )
+            esc_attr( $value )
         );
     }}
 
@@ -285,7 +298,10 @@ class RestRoutes {{
             array(
                 'methods'             => 'GET',
                 'callback'            => array( self::class, 'get_items' ),
-                'permission_callback' => '__return_true', // 仅公开数据; 否则返回 current_user_can( ... )
+                // 默认要求登录并具备 read 能力。
+                // 若接口确实返回任何人都可见的公开数据，可改用 WordPress 的公开权限回调常量；
+                // 但切勿用它保护敏感数据。
+                'permission_callback' => array( self::class, 'can_read_items' ),
                 'args'                => array(
                     'per_page' => array(
                         'type'              => 'integer',
@@ -298,6 +314,10 @@ class RestRoutes {{
         ) );
     }}
 
+    public static function can_read_items(): bool {{
+        return current_user_can( 'read' );
+    }}
+
     public static function get_items( \\WP_REST_Request $request ): \\WP_REST_Response {{
         return rest_ensure_response( array() );
     }}
@@ -306,7 +326,7 @@ class RestRoutes {{
 
 AI_CLASS = """<?php
 /**
- * AI features: AI Client + Ability（WP 7.0+，带特性探测）
+ * AI features: Abilities API + AI Client（WP 7.0+，带特性探测）
  *
  * @package {namespace}\\Ai
  */
@@ -320,10 +340,23 @@ if ( ! defined( 'ABSPATH' ) ) {{
 class AiFeatures {{
 
     public static function init(): void {{
-        if ( ! function_exists( 'wp_ai_client_prompt' ) ) {{
+        // Abilities API 自 WP 6.9 引入；AI Client 自 WP 7.0 引入，故分开探测。
+        if ( ! function_exists( 'wp_register_ability' ) ) {{
             return;
         }}
+        // 分类必须先于 ability 注册（否则 wp_register_ability() 会 _doing_it_wrong 并返回 null）。
+        add_action( 'wp_abilities_api_categories_init', array( self::class, 'register_category' ) );
         add_action( 'wp_abilities_api_init', array( self::class, 'register_ability' ) );
+    }}
+
+    public static function register_category(): void {{
+        if ( ! function_exists( 'wp_register_ability_category' ) ) {{
+            return;
+        }}
+        wp_register_ability_category( '{slug}', array(
+            'label'       => __( '{name_lit}', '{slug}' ),
+            'description' => __( 'Abilities provided by {name_lit}.', '{slug}' ),
+        ) );
     }}
 
     public static function register_ability(): void {{
@@ -331,31 +364,59 @@ class AiFeatures {{
             return;
         }}
         wp_register_ability( '{slug}/summarize-post', array(
-            'label'             => __( 'Summarize post', '{slug}' ),
-            'description'       => __( 'Generates a short summary of the given post content.', '{slug}' ),
-            'category'          => 'content',
-            'input_schema'      => array(
-                'type'       => 'object',
-                'properties' => array(
-                    'content' => array( 'type' => 'string', 'required' => true ),
-                ),
+            'label'               => __( 'Summarize post', '{slug}' ),
+            'description'         => __( 'Generates a short summary of the given post content.', '{slug}' ),
+            'category'            => '{slug}',
+            'input_schema'        => array(
+                'type'        => 'string',
+                'description' => __( 'The post content to summarize.', '{slug}' ),
+                'minLength'   => 1,
+                'required'    => true,
             ),
-            'output_schema'     => array( 'type' => 'string' ),
-            'execute_callback'  => array( self::class, 'summarize' ),
-            'permission_callback' => static function (): bool {{ return current_user_can( 'edit_posts' ); }},
-            'meta'              => array( 'public' => false ),
+            'output_schema'       => array(
+                'type' => 'string',
+            ),
+            'execute_callback'    => array( self::class, 'summarize' ),
+            'permission_callback' => static function (): bool {{
+                return current_user_can( 'edit_posts' );
+            }},
+            // public 只表示"可被发现"，不代表"可执行"；执行仍走 permission_callback。
+            'meta'                => array(
+                'annotations' => array(
+                    'readonly'    => true,
+                    'destructive' => false,
+                    'idempotent'  => true,
+                ),
+                'public'      => false,
+            ),
         ) );
     }}
 
-    public static function summarize( array $input ) {{
-        $result = wp_ai_client_prompt( $input['content'] ?? '' )
-            ->using_temperature( 0.3 )
-            ->generate_text_result();
-
-        if ( is_wp_error( $result ) ) {{
-            return $result;
+    /**
+     * 生成摘要。
+     *
+     * @param string $input 待摘要的正文。
+     * @return string|\\WP_Error
+     */
+    public static function summarize( string $input ) {{
+        // AI Client 需要 WP 7.0+；旧站优雅降级，不产生 Fatal。
+        if ( ! function_exists( 'wp_ai_client_prompt' ) ) {{
+            return new \\WP_Error(
+                'wp_ai_client_unavailable',
+                __( '当前站点未启用 WordPress AI Client。', '{slug}' )
+            );
         }}
-        return wp_kses_post( $result->get_text() );
+
+        // generate_text() 返回 string|WP_Error。
+        $text = wp_ai_client_prompt( $input )
+            ->using_temperature( 0.3 )
+            ->generate_text();
+
+        if ( is_wp_error( $text ) ) {{
+            return $text;
+        }}
+
+        return wp_kses_post( $text );
     }}
 }}
 """
@@ -394,6 +455,11 @@ if ( ! defined( 'ABSPATH' ) ) {{
 class ExampleBlock {{
 
     public static function init(): void {{
+        // register_block_type() 必须在 init 阶段执行。
+        add_action( 'init', array( self::class, 'register' ) );
+    }}
+
+    public static function register(): void {{
         register_block_type( {const_prefix}_DIR . 'blocks/example-block' );
     }}
 }}
@@ -427,9 +493,19 @@ TODO: 详细说明。
 """
 
 
-def slugify(text: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
-    return s or "my-plugin"
+def slugify(text: str, explicit: str | None = None) -> str:
+    """生成插件目录名 / Text Domain。
+
+    优先使用 --slug 显式值；否则从插件名提取 ASCII 部分。
+    纯非 ASCII 名称（如纯中文名）会退化为同一 slug 导致目录冲突，
+    此时用名称哈希生成稳定且唯一的 slug。
+    """
+    source = explicit if explicit else text
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", source.lower()).strip("-")
+    if not s:
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+        s = f"my-plugin-{digest}"
+    return s
 
 
 def to_namespace(slug: str) -> str:
@@ -492,6 +568,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="WordPress 插件脚手架")
     ap.add_argument("--name", required=True, help='插件显示名，如 "My Plugin"')
     ap.add_argument("--path", default=".", help="输出父目录（默认当前目录）")
+    ap.add_argument("--slug", default=None, help="显式指定目录名/Text Domain（推荐中文名时使用）")
     ap.add_argument("--author", default="Your Name")
     ap.add_argument("--author-uri", default="https://example.com")
     ap.add_argument("--description", default="TODO: 一句话描述插件功能。")
@@ -501,7 +578,7 @@ def main() -> int:
     ap.add_argument("--with-ai", action="store_true")
     args = ap.parse_args()
 
-    slug = slugify(args.name)
+    slug = slugify(args.name, args.slug)
     ns = to_namespace(slug)
     cp = to_const_prefix(slug)
     plugin_uri = f"https://example.com/{slug}"
@@ -513,6 +590,7 @@ def main() -> int:
     base = os.path.join(args.path, slug)
     if os.path.exists(base):
         print(f"错误: 目标已存在 {base}", file=sys.stderr)
+        print("  提示: 用 --slug 指定不同的目录名", file=sys.stderr)
         return 2
 
     ctx = dict(name=sanitize_header_value(args.name),
@@ -522,11 +600,14 @@ def main() -> int:
                author_uri=sanitize_header_value(args.author_uri),
                description=sanitize_header_value(args.description),
                plugin_uri=plugin_uri,
-               author_slug=slugify(args.author))
+               author_slug=slugify(args.author) or "your-wp-username")
 
     write(os.path.join(base, f"{slug}.php"), HEADER.format(**ctx))
     write(os.path.join(base, "src", "autoload.php"), AUTOLOAD.format(**ctx))
-    write(os.path.join(base, "src", "Plugin.php"), PLUGIN_CLASS.format(hooks="{hooks}", **ctx))
+    # 写入时保留 {submodule_calls} 占位符字面量（传 hooks="{hooks}" 是同一个技巧）：
+    # 若在此处直接替换成空串，后续就找不到占位符，子模块调用会静默丢失。
+    write(os.path.join(base, "src", "Plugin.php"),
+          PLUGIN_CLASS.format(submodule_calls="{submodule_calls}", **ctx))
     write(os.path.join(base, "src", "Activator.php"), ACTIVATOR.format(**ctx))
     write(os.path.join(base, "src", "Deactivator.php"), DEACTIVATOR.format(**ctx))
     write(os.path.join(base, "uninstall.php"), UNINSTALL.format(**ctx))
@@ -537,27 +618,32 @@ def main() -> int:
         print(f"错误: 创建 languages 目录失败: {exc}", file=sys.stderr)
         return 1
 
-    hooks = []
+    # 子模块引导。
+    #
+    # 关键：这些 init 方法必须**直接调用**，不能在 plugins_loaded 回调内部
+    # 再 add_action( 'plugins_loaded', ... )。
+    # 原因：WordPress 的 WP_Hook 在执行某个优先级的回调时 foreach 遍历的是
+    # 该优先级的回调快照；同优先级新注册的回调在本次 do_action 中不会执行。
+    # 于是子模块的 init 永远不会被调用——插件能激活，却什么都不做（静默致命）。
+    submodule_calls = []
     if args.with_settings:
         write(os.path.join(base, "src", "Admin", "SettingsPage.php"), SETTINGS_CLASS.format(**ctx))
-        hooks.append("        add_action( 'plugins_loaded', array( Admin\\SettingsPage::class, 'init' ) );")
+        submodule_calls.append("        Admin\\SettingsPage::init();")
     if args.with_rest:
         write(os.path.join(base, "src", "Api", "RestRoutes.php"), REST_CLASS.format(**ctx))
-        hooks.append("        add_action( 'plugins_loaded', array( Api\\RestRoutes::class, 'init' ) );")
+        submodule_calls.append("        Api\\RestRoutes::init();")
     if args.with_ai:
         write(os.path.join(base, "src", "Ai", "AiFeatures.php"), AI_CLASS.format(**ctx))
-        hooks.append("        add_action( 'plugins_loaded', array( Ai\\AiFeatures::class, 'init' ) );")
+        submodule_calls.append("        Ai\\AiFeatures::init();")
     if args.with_blocks:
         write(os.path.join(base, "src", "Blocks", "ExampleBlock.php"), BLOCK_PHP.format(**ctx))
         write(os.path.join(base, "blocks", "example-block", "block.json"), BLOCK_JSON.format(**ctx))
-        hooks.append("        add_action( 'init', array( Blocks\\ExampleBlock::class, 'init' ) );")
+        submodule_calls.append("        Blocks\\ExampleBlock::init();")
 
-    # 将可选功能的 hooks 注入 Plugin::init()（无选项时替换为空串，
-    # 确保 {hooks} 占位符不会残留——残留即是 PHP 语法错误）
     plugin_class_path = os.path.join(base, "src", "Plugin.php")
     with open(plugin_class_path, "r", encoding="utf-8") as fh:
         pc = fh.read()
-    pc = pc.replace("{hooks}", "\n".join(hooks))
+    pc = pc.replace("{submodule_calls}", "\n".join(submodule_calls))
     write(plugin_class_path, pc)
 
     print(f"已生成插件骨架: {os.path.abspath(base)}")

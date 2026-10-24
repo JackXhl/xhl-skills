@@ -77,7 +77,16 @@
 
 ## 7. 自动化
 
-- 本 skill 的 `scripts/wp_security_scan.py <目录>` 可批量检查第 5 节黑名单、混淆特征、未净化超全局、SQL 拼接、缺失 ABSPATH 守卫、REST 缺 `permission_callback`、隐藏文件、外联域名
-- 误报控制：`base64_decode`/`file_put_contents`/`parse_str` 等常见合法用法仅作提示级报告，不会直接判 HIGH；HIGH 基本可直接作为可疑点排查
+- 本 skill 的 `scripts/wp_security_scan.py <目录>` 可批量检查第 5 节黑名单、混淆特征、未净化超全局、SQL 拼接、缺失 ABSPATH 守卫、缺失 nonce/capability、`wp_ajax_nopriv_`、REST 缺 `permission_callback`、短代码未转义、隐藏文件、外联域名
+- **污点传播（v2 能力）**：扫描器先收集"由超全局赋值的变量"，再判断这些变量是否流入危险汇聚点（`$wpdb->*` / `include` / `call_user_func` / `unserialize` / 文件写入）。这覆盖了直接拼接正则扫不到的两段式写法：
+
+```php
+$id  = $_GET['id'];
+$sql = "SELECT * FROM {$wpdb->posts} WHERE ID = " . $id;
+$wpdb->get_results( $sql );        // ← 直接拼接正则扫不到，污点传播可捕获
+```
+
+- 两个易混的 SQL 场景：`$wpdb->prepare( "… %s", $val )` 是安全写法，不报；`$wpdb->prepare( "… " . $id )` **不安全**——`prepare()` 只转义 `%s` 占位符，格式串里直接插值等于拼接，`prepare()` 救不了
+- 误报控制：`base64_decode`/`file_put_contents`/`parse_str`/`move_uploaded_file` 等常见合法用法仅作提示级报告，不会直接判 HIGH（`move_uploaded_file` 是 WordPress 上传的标准落盘方式，`wp_handle_upload` 内部即用它）；HIGH 基本可直接作为可疑点排查
 - 官方工具：Plugin Check（wordpress.org 插件检查）、PHPStan + wp-phpstan（静态分析）
 - 审查结论分级：HIGH（可直接利用）/ MEDIUM（需条件）/ LOW（卫生问题）/ INFO

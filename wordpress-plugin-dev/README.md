@@ -24,18 +24,19 @@ wordpress-plugin-dev/
 ├── SKILL.md               # 版本基线 / 工作流 / 强制规则 / 故障模式速查
 ├── README.md
 ├── references/            # 6 篇参考资料（按任务类型按需加载）
-│   ├── plugin-fundamentals.md          # 头部字段、目录规范、激活/卸载、版本号陷阱、namespace 位置陷阱
+│   ├── plugin-fundamentals.md          # 头部字段、目录规范、激活/卸载、版本号陷阱、namespace 位置陷阱、钩子快照陷阱
 │   ├── hooks-and-core-apis.md          # Hooks API 与常用核心 API
 │   ├── security-checklist.md           # 安全审查清单、净化/转义函数表、漏洞模式
 │   ├── ai-client-connectors-abilities.md  # AI 三件套 + 国内连接器实战拆解
 │   ├── gutenberg-and-frontend.md       # 块开发与前端资源
 │   └── release-and-quality.md          # 质量门禁与发布清单
-└── scripts/               # 5 个可执行脚本（Python 3.8+，无第三方依赖）
+└── scripts/               # 6 个可执行脚本（Python 3.8+，无第三方依赖）
     ├── scaffold_plugin.py     # 生成符合规范的插件骨架
-    ├── wp_security_scan.py    # 静态安全扫描，输出分级报告
+    ├── wp_security_scan.py    # 静态安全扫描（含污点传播），输出分级报告
     ├── check_php_syntax.py    # php -l 语法检查（无 PHP 环境自动跳过）
     ├── check_wp_versions.py   # 版本保鲜检查（比对 api.wordpress.org）
-    └── self_test.py           # 技能自测：14 项断言（脚手架/边界输入/扫描/降级路径回归）
+    ├── self_test.py           # 技能自测：31 项断言（脚手架/边界输入/运行时钩子/ability 注册语义/扫描/误报控制/降级路径回归）
+    └── wp_stub.php            # 最小 WordPress 运行时存根：真正执行钩子并诊断引导链路断裂
 ```
 
 ## 使用示例
@@ -44,11 +45,17 @@ wordpress-plugin-dev/
 # 生成新插件骨架（可选 --with-rest/--with-settings/--with-blocks/--with-ai）
 python scripts/scaffold_plugin.py --name "My Plugin" --path ./my-plugin --with-settings --with-rest
 
+# 中文插件名建议显式指定 slug（避免多插件目录冲突）
+python scripts/scaffold_plugin.py --name "我的插件" --slug my-cn-plugin --path ./out
+
 # 安全扫描既有插件
 python scripts/wp_security_scan.py /path/to/plugin-dir
 
 # 确认版本基线未过期
 python scripts/check_wp_versions.py
+
+# 运行时冒烟（需要 PHP CLI）：验证钩子回调真的被触发
+php scripts/wp_stub.php /path/to/plugin-dir/my-plugin.php
 
 # 运行技能自测（修改脚本后必跑）
 python scripts/self_test.py
@@ -63,10 +70,11 @@ python scripts/self_test.py
 
 ## 质量验证
 
-- **安全扫描器**：真实生产插件（`ai-provider-for-china`，5 家国内大模型连接器）实测 HIGH=0，与人工审计结论一致；恶意夹具实测 HIGH=11、10 类威胁全覆盖
-- **脚手架产出**：全选项生成的 10 个 PHP 文件经 PHP 8.5 `php -l` 逐一验证（曾借此修复 namespace 声明位置导致的 7 文件致命错误）
-- **自测套件**：`self_test.py` 14 项断言全绿（含无选项生成、数字开头/单引号/`*/` 注入等边界输入）；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
-- **CI**：`.github/workflows/skill-ci.yml` 在 ubuntu（自测套件）与 windows（脚手架 php -l）双平台运行
+- **安全扫描器**：真实生产插件（`ai-provider-for-china`，5 家国内大模型连接器）实测 HIGH=0、3 个 MEDIUM（与人工审计结论一致），无新增误报；恶意夹具实测 HIGH=10、11 类威胁全覆盖；两段式注入（污点传播）可捕获；`prepare()` 正确用法不误报
+- **脚手架产出**：全选项生成的 10 个 PHP 文件经 PHP 8.4 `php -l` 逐一验证（曾借此修复 namespace 声明位置导致的 7 文件致命错误）
+- **运行时冒烟**：`wp_stub.php` 复现 WordPress `WP_Hook` 的快照语义并**真正执行**钩子回调，可诊断"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')` 导致子模块永不执行"这一致命模式（曾借此发现并修复脚手架自身的静默致命缺陷）
+- **自测套件**：`self_test.py` 31 项断言全绿（PHP 8.4 环境下 31/31 通过、零跳过）；含中文名 slug 冲突、子模块引导方式、钩子真实触发、ability 分类/注册顺序与钩子归属语义、存根对 ability 注册错误的诊断能力、污点传播、误报控制、数字开头/单引号/`*/` 注入等边界输入；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
+- **CI**：`.github/workflows/skill-ci.yml` 在 ubuntu（自测套件）与 windows（脚手架 php -l + 运行时冒烟）双平台运行
 
 ## License
 

@@ -3,15 +3,18 @@
 
 用内置夹具对技能的全部脚本做回归验证，任何环境可重复执行：
   1. 脚手架全选项生成 -> 文件齐全 -> php -l 语法全过（需 PHP，无则跳过）
-  1b. 无选项基础生成 -> {hooks} 占位符不残留
+  1b. 无选项基础生成 -> 无残留占位符
   1c. 特殊字符插件名（数字开头/单引号/*/ 注入）-> 生成且语法合法
   1d. CLI 边界（--path 指向文件）-> 优雅报错，不抛栈回溯
-  1e. 运行时冒烟（WordPress 存根）-> autoloader/namespace/钩子注册正确
-  2. 扫描器对干净产出 -> HIGH=0
+  1e. 非 ASCII（中文）插件名 -> 不同名称生成到不同目录（不冲突）
+  1f. 子模块引导 -> 直接调用 init()，不在 plugins_loaded 内重复 add_action
+  1g. 运行时冒烟（WordPress 存根真正执行钩子）-> autoloader/namespace/钩子/子模块
+  2. 扫描器对干净产出 -> HIGH=0 且 MEDIUM=0
   3. 扫描器对恶意夹具 -> exit=1、HIGH>=8、威胁类别全覆盖
-     （rce/obfuscation/file/hijack/binary/hidden/abspath/ajax-nonce/rest/input）
-  4. check_php_syntax 无 PHP 路径 -> 优雅跳过；有 PHP 路径 -> 正常检查
-  5. check_wp_versions -> 退出码恒为 0（离线/在线均不阻塞）
+  4. 扫描器污点传播 -> 两段式 SQL / LFI / 回调 / 反序列化 可捕获
+  5. 扫描器误报控制 -> prepare 正确用法不报 HIGH；move_uploaded_file 不判 HIGH
+  6. check_php_syntax 无 PHP 路径 -> 优雅跳过；有 PHP 路径 -> 正常检查
+  7. check_wp_versions -> 退出码恒为 0（离线/在线均不阻塞）
 
 环境说明: 部分 Windows 杀毒软件（如火绒 Hips / Defender）会在文件写入后
 约 100ms 内隔离含恶意签名的夹具（实测延迟 <100ms，而 Python 子进程启动
@@ -21,7 +24,7 @@
 
 用法: python self_test.py
 退出码: 0=全部通过（含跳过）, 1=存在失败项。
-依赖: Python 3.8+，无第三方库；PHP CLI 可选（有则启用语法断言）。
+依赖: Python 3.8+，无第三方库；PHP CLI 可选（有则启用语法与运行时断言）。
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ SCAFFOLD = SCRIPTS / "scaffold_plugin.py"
 SCANNER = SCRIPTS / "wp_security_scan.py"
 SYNTAX_CHECK = SCRIPTS / "check_php_syntax.py"
 VERSION_CHECK = SCRIPTS / "check_wp_versions.py"
+STUB = SCRIPTS / "wp_stub.php"
 
 # ---- 恶意夹具：覆盖扫描器声称的每一类威胁 ----
 # 注意: payload 经过"去 malware 化"处理——仍能触发扫描器的全部模式，
@@ -108,6 +112,21 @@ EVIL_FILES = {
     "dropper.exe": None,
 }
 
+# ---- 污点传播夹具：两段式写法（直接拼接正则扫不到）----
+EVIL_TAINT = """<?php
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+global $wpdb;
+$id  = $_GET['id'];
+$sql = "SELECT * FROM {$wpdb->posts} WHERE ID = " . $id;
+$rows = $wpdb->get_results( $sql );
+$tpl = $_GET['tpl'];
+include( $tpl );
+$cb = $_REQUEST['cb'];
+call_user_func( $cb );
+$blob = $_COOKIE['blob'];
+$obj = unserialize( $blob );
+"""
+
 RESULTS: list[tuple[str, bool, str]] = []
 SKIPS: list[str] = []
 
@@ -164,6 +183,76 @@ def build_evil(dirpath: Path) -> None:
     (dirpath / "dropper.exe").write_bytes(b"MZ\x90\x00\x03")
 
 
+def build_ai_fixture(dirpath: Path, namespace: str, const: str, slug: str,
+                     init_body: str) -> None:
+    """构造一个"故意写错的 AI 模块"夹具。
+
+    init_body 决定 AiFeatures::init() 里注册了哪些钩子，用来模拟两类
+    静默致命错误：
+      ① 分类从未注册 -> wp_register_ability() 抛错，ability 凭空消失；
+      ② 分类注册到错误的钩子 -> wp_register_ability_category() 抛错。
+    这两类错误都不会让插件 fatal，只会悄悄少一个 ability。
+    """
+    (dirpath / "src" / "Ai").mkdir(parents=True, exist_ok=True)
+    (dirpath / "src" / "autoload.php").write_text(
+        "<?php\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+        "spl_autoload_register( function ( string $class ): void {\n"
+        f"    $prefix = '{namespace}\\\\';\n"
+        "    if ( strpos( $class, $prefix ) !== 0 ) { return; }\n"
+        f"    $file = {const}_PLUGIN_DIR . 'src/' . str_replace( '\\\\', '/', "
+        "substr( $class, strlen( $prefix ) ) ) . '.php';\n"
+        "    if ( file_exists( $file ) ) { require_once $file; }\n"
+        "} );\n",
+        encoding="utf-8")
+    (dirpath / f"{slug}.php").write_text(
+        "<?php\n/**\n * Plugin Name: AI Fixture\n */\n"
+        "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+        f"define( '{const}_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );\n"
+        f"require_once {const}_PLUGIN_DIR . 'src/autoload.php';\n"
+        f"add_action( 'plugins_loaded', array( {namespace}\\Plugin::class, 'init' ) );\n",
+        encoding="utf-8")
+    (dirpath / "src" / "Plugin.php").write_text(
+        "<?php\nnamespace " + namespace + ";\n"
+        "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+        "class Plugin {\n    public static function init(): void {\n"
+        "        Ai\\AiFeatures::init();\n    }\n}\n",
+        encoding="utf-8")
+    (dirpath / "src" / "Ai" / "AiFeatures.php").write_text(
+        "<?php\nnamespace " + namespace + "\\Ai;\n"
+        "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+        "class AiFeatures {\n"
+        "    public static function init(): void {\n" + init_body + "    }\n"
+        "    public static function register_category(): void {\n"
+        "        if ( ! function_exists( 'wp_register_ability_category' ) ) { return; }\n"
+        f"        wp_register_ability_category( '{slug}', array(\n"
+        f"            'label' => __( 'Fixture Category', '{slug}' ),\n"
+        f"            'description' => __( 'Fixture category.', '{slug}' ),\n"
+        "        ) );\n"
+        "    }\n"
+        "    public static function register_ability(): void {\n"
+        "        if ( ! function_exists( 'wp_register_ability' ) ) { return; }\n"
+        f"        wp_register_ability( '{slug}/do-thing', array(\n"
+        f"            'label' => __( 'Do Thing', '{slug}' ),\n"
+        f"            'description' => __( 'Fixture ability.', '{slug}' ),\n"
+        f"            'category' => '{slug}',\n"
+        "            'execute_callback' => array( self::class, 'do_thing' ),\n"
+        "            'permission_callback' => '__return_true',\n"
+        "        ) );\n"
+        "    }\n"
+        "    public static function do_thing( string $input = '' ) { return $input; }\n"
+        "}\n",
+        encoding="utf-8")
+
+
+def scan_json(root: Path) -> tuple[dict, list[dict]]:
+    proc = run(SCANNER, str(root), "--json")
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"summary": {"HIGH": -1, "MEDIUM": -1, "LOW": -1, "INFO": -1}}, []
+    return data.get("summary", {}), data.get("findings", [])
+
+
 def main() -> int:
     ensure_utf8_stdout()
     php = find_php()
@@ -192,7 +281,7 @@ def main() -> int:
         else:
             skip("脚手架产出 php -l 全部通过", "未检测到 PHP CLI（安装 PHP 8.1+ 后启用）")
 
-        # ---- 测试 1b: 无选项基础生成（{hooks} 占位符不得残留）----
+        # ---- 测试 1b: 无选项基础生成（占位符不得残留）----
         basic = tmp / "basic"
         proc = run(SCAFFOLD, "--name", "Plain Basic Plugin", "--path", str(basic))
         basic_dir = basic / "plain-basic-plugin"
@@ -201,10 +290,11 @@ def main() -> int:
               proc.stderr.strip()[-100:] if proc.returncode else "")
         plugin_class = basic_dir / "src" / "Plugin.php"
         if plugin_class.is_file():
-            check("无选项生成无 {hooks} 占位符残留",
-                  "{hooks}" not in plugin_class.read_text(encoding="utf-8"))
+            body = plugin_class.read_text(encoding="utf-8")
+            check("无选项生成无占位符残留",
+                  "{hooks}" not in body and "{submodule_calls}" not in body)
         else:
-            check("无选项生成无 {hooks} 占位符残留", False, "Plugin.php 未生成")
+            check("无选项生成无占位符残留", False, "Plugin.php 未生成")
 
         # ---- 测试 1c: 特殊字符插件名（边界输入）----
         # 覆盖实战发现的三类致命场景：数字开头（namespace/常量非法）、
@@ -246,31 +336,184 @@ def main() -> int:
               and "不是目录" in proc.stderr,
               (proc.stderr.strip().splitlines() or ["无输出"])[-1][:60])
 
-        # ---- 测试 1e: 运行时冒烟（WordPress 存根）----
-        # php -l 只验证语法；本项验证运行时：PSR-4 autoloader 能否定位类、
-        # 子命名空间（Admin/Api/Ai/Blocks）能否解析、常量定义时机、钩子注册。
+        # ---- 测试 1e: 非 ASCII（中文）插件名不得 slug 冲突 ----
+        cn = tmp / "cn"
+        cn.mkdir()
+        cn_slugs = []
+        cn_ok = True
+        for nm in ["我的测试插件", "另一个插件"]:
+            proc = run(SCAFFOLD, "--name", nm, "--path", str(cn))
+            if proc.returncode != 0:
+                cn_ok = False
+                break
+            m = re.search(r"slug=(\S+)", proc.stdout)
+            cn_slugs.append(m.group(1) if m else "?")
+        check("中文插件名生成成功且互不冲突",
+              cn_ok and len(set(cn_slugs)) == 2,
+              f"slugs={cn_slugs}")
+
+        # ---- 测试 1f: 子模块引导方式（不得在 plugins_loaded 内重复 add_action）----
+        pc_body = plugin_class.read_text(encoding="utf-8") if plugin_class.is_file() else ""
+        if plugin_dir.is_dir():
+            pc_body = (plugin_dir / "src" / "Plugin.php").read_text(encoding="utf-8")
+        check("子模块用直接调用引导（不在 plugins_loaded 内 add_action）",
+              "add_action( 'plugins_loaded'" not in pc_body
+              and all(f"{ns}::init();" in pc_body for ns in
+                      ["Admin\\SettingsPage", "Api\\RestRoutes", "Ai\\AiFeatures", "Blocks\\ExampleBlock"]),
+              "四个子模块均由 Plugin::init() 直接调用")
+
+        # ---- 测试 1f2: AI 桩的 Abilities API 注册顺序与钩子归属 ----
+        # 必须按"方法定义顺序"判定，而不是按字符串首次出现位置：
+        # wp_register_ability_category( 是 wp_register_ability( 的前缀，
+        # 且注释里常出现这两个词，直接比位置会得出完全错误的结论。
+        ai_file = plugin_dir / "src" / "Ai" / "AiFeatures.php"
+        if ai_file.is_file():
+            ai_src = ai_file.read_text(encoding="utf-8")
+            # 去掉行注释与块注释，避免注释干扰定位
+            ai_code = re.sub(r"/\*.*?\*/", "", ai_src, flags=re.S)
+            ai_code = re.sub(r"//[^\n]*", "", ai_code)
+            cat_def = ai_code.find("function register_category")
+            ab_def = ai_code.find("function register_ability")
+            cat_hook = "wp_abilities_api_categories_init" in ai_code
+            ab_hook = "wp_abilities_api_init" in ai_code
+            # 分类注册必须挂在 categories_init，ability 注册必须挂在 api_init
+            cat_on_right_hook = bool(re.search(
+                r"add_action\(\s*'wp_abilities_api_categories_init'\s*,\s*array\([^)]*'register_category'",
+                ai_code))
+            ab_on_right_hook = bool(re.search(
+                r"add_action\(\s*'wp_abilities_api_init'\s*,\s*array\([^)]*'register_ability'",
+                ai_code))
+            check("AI 桩：分类注册方法先于 ability 注册方法定义",
+                  cat_def != -1 and ab_def != -1 and cat_def < ab_def,
+                  f"register_category@{cat_def} register_ability@{ab_def}")
+            check("AI 桩：分类与 ability 分别挂在正确的初始化钩子上",
+                  cat_hook and ab_hook and cat_on_right_hook and ab_on_right_hook,
+                  "categories_init / api_init 归属正确"
+                  if (cat_hook and ab_hook and cat_on_right_hook and ab_on_right_hook)
+                  else "钩子归属错误")
+        else:
+            check("AI 桩：分类注册方法先于 ability 注册方法定义", False, "AiFeatures.php 未生成")
+            check("AI 桩：分类与 ability 分别挂在正确的初始化钩子上", False, "AiFeatures.php 未生成")
+
+        # ---- 测试 1g: 运行时冒烟（WordPress 存根真正执行钩子）----
         if php:
-            stub = SCRIPTS / "wp_stub.php"
-            r = subprocess.run([php, str(stub), str(plugin_dir / "self-test-plugin.php")],
+            r = subprocess.run([php, str(STUB), str(plugin_dir / "self-test-plugin.php")],
                                capture_output=True, text=True, encoding="utf-8",
                                errors="replace")
-            m = re.search(r"钩子注册数:\s*(\d+)", r.stdout)
+            out = r.stdout
+            m = re.search(r"钩子注册数:\s*(\d+)", out)
             hook_count = int(m.group(1)) if m else 0
+            fired = re.search(r"实际触发的钩子: (.*)", out)
+            fired_tags = fired.group(1).strip() if fired else ""
             check("运行时冒烟通过（autoloader/namespace/钩子）",
-                  r.returncode == 0 and hook_count >= 7 and "FAIL" not in r.stdout,
+                  r.returncode == 0 and hook_count >= 7 and "FAIL" not in out,
                   f"钩子 {hook_count} 个" if hook_count else
-                  (r.stdout.strip().splitlines() or ["无输出"])[-1][:70])
+                  (out.strip().splitlines() or ["无输出"])[-1][:70])
+            # 关键回归：plugins_loaded 必须真的被触发，且子模块钩子必须被触发。
+            # 若插件在 plugins_loaded 回调内再次 add_action('plugins_loaded')，
+            # WP_Hook 的快照语义会让子模块 init 永不执行——这正是被掩盖的致命缺陷。
+            check("plugins_loaded 钩子被真实执行",
+                  "plugins_loaded" in fired_tags, fired_tags[:90])
+            check("子模块钩子被真实执行（init/rest_api_init/admin_*）",
+                  any(t in fired_tags for t in ("init", "rest_api_init", "admin_init", "admin_menu")),
+                  fired_tags[:90])
+            check("abilities 分类与 ability 注册路径被真实执行",
+                  "wp_abilities_api_categories_init" in fired_tags
+                  and "wp_abilities_api_init" in fired_tags,
+                  fired_tags[:120])
+
+            # ---- 测试 1h: 存根必须能诊断出"快照陷阱"致命模式 ----
+            # 在 plugins_loaded 回调内部再 add_action('plugins_loaded', ...) 时，
+            # WP_Hook 的快照语义使子模块 init 永不执行。存根必须能识别并报 FAIL，
+            # 否则这个缺陷会继续被"只统计注册数"的存根掩盖。
+            trap = tmp / "trap-plugin"
+            (trap / "src" / "Api").mkdir(parents=True)
+            (trap / "src" / "autoload.php").write_text(
+                "<?php\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+                "spl_autoload_register( function ( string $class ): void {\n"
+                "    $prefix = 'TrapPlugin\\\\';\n"
+                "    if ( strpos( $class, $prefix ) !== 0 ) { return; }\n"
+                "    $file = TRAP_PLUGIN_DIR . 'src/' . str_replace( '\\\\', '/', "
+                "substr( $class, strlen( $prefix ) ) ) . '.php';\n"
+                "    if ( file_exists( $file ) ) { require_once $file; }\n"
+                "} );\n",
+                encoding="utf-8")
+            (trap / "trap-plugin.php").write_text(
+                "<?php\n/**\n * Plugin Name: Trap Plugin\n */\n"
+                "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+                "define( 'TRAP_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );\n"
+                "require_once TRAP_PLUGIN_DIR . 'src/autoload.php';\n"
+                "add_action( 'plugins_loaded', array( TrapPlugin\\Plugin::class, 'init' ) );\n",
+                encoding="utf-8")
+            (trap / "src" / "Plugin.php").write_text(
+                "<?php\nnamespace TrapPlugin;\n"
+                "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+                "class Plugin {\n    public static function init(): void {\n"
+                "        add_action( 'plugins_loaded', array( Api\\RestRoutes::class, 'init' ) );\n"
+                "    }\n}\n",
+                encoding="utf-8")
+            (trap / "src" / "Api" / "RestRoutes.php").write_text(
+                "<?php\nnamespace TrapPlugin\\Api;\n"
+                "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+                "class RestRoutes {\n    public static function init(): void {\n"
+                "        add_action( 'rest_api_init', array( self::class, 'register_routes' ) );\n"
+                "    }\n"
+                "    public static function register_routes(): void {\n"
+                "        register_rest_route( 'trap/v1', '/x', array( 'methods' => 'GET', "
+                "'callback' => '__return_true' ) );\n    }\n}\n",
+                encoding="utf-8")
+            r2 = subprocess.run([php, str(STUB), str(trap / "trap-plugin.php")],
+                                capture_output=True, text=True, encoding="utf-8",
+                                errors="replace")
+            check("存根能诊断出 plugins_loaded 快照陷阱（子模块永不执行）",
+                  r2.returncode == 1 and "快照" in r2.stdout,
+                  (r2.stdout.strip().splitlines() or ["无输出"])[-1][:80])
+
+            # ---- 测试 1i: 存根必须能诊断出 ability 注册的两类静默致命错误 ----
+            # ① 分类从未注册：wp_register_ability() 抛错，ability 凭空消失；
+            # ② 分类注册到错误的钩子：wp_register_ability_category() 抛错。
+            # 两者都不会让插件 fatal，只是安静地少一个 ability，必须由存根拦下。
+            ai_cases = [
+                ("ai-missing-cat", "AiMissingCatPlugin", "AIMISSINGCAT",
+                 "ai-missing-cat",
+                 "        add_action( 'wp_abilities_api_init', "
+                 "array( self::class, 'register_ability' ) );\n",
+                 "分类未注册"),
+                ("ai-wrong-hook", "AiWrongHookPlugin", "AIWRONGHOOK",
+                 "ai-wrong-hook",
+                 "        add_action( 'wp_abilities_api_init', "
+                 "array( self::class, 'register_category' ) );\n"
+                 "        add_action( 'wp_abilities_api_init', "
+                 "array( self::class, 'register_ability' ) );\n",
+                 "wp_abilities_api_categories_init"),
+            ]
+            ai_ok = True
+            ai_detail = []
+            for dirname, ns, const, slug, init_body, expect in ai_cases:
+                d = tmp / dirname
+                build_ai_fixture(d, ns, const, slug, init_body)
+                r3 = subprocess.run([php, str(STUB), str(d / f"{slug}.php")],
+                                    capture_output=True, text=True, encoding="utf-8",
+                                    errors="replace")
+                if not (r3.returncode == 1 and expect in r3.stdout):
+                    ai_ok = False
+                    ai_detail.append(
+                        f"{dirname}: exit={r3.returncode} 期望含 {expect!r}")
+            check("存根能诊断出 ability 分类未注册 / 注册钩子错误", ai_ok,
+                  "; ".join(ai_detail) if ai_detail else "两类错误均被拦下")
         else:
             skip("运行时冒烟通过（autoloader/namespace/钩子）", "未检测到 PHP CLI")
+            skip("plugins_loaded 钩子被真实执行", "未检测到 PHP CLI")
+            skip("子模块钩子被真实执行（init/rest_api_init/admin_*）", "未检测到 PHP CLI")
+            skip("abilities 分类与 ability 注册路径被真实执行", "未检测到 PHP CLI")
+            skip("存根能诊断出 plugins_loaded 快照陷阱（子模块永不执行）", "未检测到 PHP CLI")
+            skip("存根能诊断出 ability 分类未注册 / 注册钩子错误", "未检测到 PHP CLI")
 
         # ---- 测试 2: 扫描器对干净产出 ----
-        proc = run(SCANNER, str(plugin_dir), "--json")
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            data = {"summary": {"HIGH": -1}}
-        check("干净产出 HIGH=0", data["summary"]["HIGH"] == 0 and proc.returncode == 0,
-              json.dumps(data["summary"], ensure_ascii=False))
+        summary, _ = scan_json(plugin_dir)
+        check("干净产出 HIGH=0 且 MEDIUM=0",
+              summary.get("HIGH") == 0 and summary.get("MEDIUM") == 0,
+              json.dumps(summary, ensure_ascii=False))
 
         # ---- 测试 3: 扫描器对恶意夹具 ----
         # 恶意签名文件会被实时杀软在 ~100ms 内隔离，Python 子进程启动
@@ -332,7 +575,47 @@ def main() -> int:
                     check("恶意样本 CLI exit=1", False,
                           f"exit={proc.returncode} 且文件未被隔离，疑似真实回归")
 
-        # ---- 测试 4: check_php_syntax 无 PHP 路径 ----
+        # ---- 测试 4: 污点传播（两段式写法）----
+        taint_dir = tmp / "taint"
+        taint_dir.mkdir()
+        (taint_dir / "taint.php").write_text(EVIL_TAINT, encoding="utf-8")
+        summary, findings = scan_json(taint_dir)
+        cats = {(f["severity"], f["category"]) for f in findings}
+        check("污点传播：两段式 SQL 注入被捕获",
+              ("HIGH", "sql") in cats, f"HIGH={summary.get('HIGH')}")
+        check("污点传播：LFI/RFI 被捕获", ("HIGH", "file") in cats)
+        check("污点传播：用户输入作回调被捕获", ("HIGH", "rce") in cats)
+        check("污点传播：对象注入（unserialize）被捕获", ("HIGH", "hijack") in cats)
+
+        # ---- 测试 5: 误报控制 ----
+        safe_dir = tmp / "safe"
+        safe_dir.mkdir()
+        (safe_dir / "safe.php").write_text(
+            "<?php\n"
+            "if ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+            "global $wpdb;\n"
+            "$rows = $wpdb->get_results( $wpdb->prepare(\n"
+            "    'SELECT * FROM p WHERE t LIKE %s',\n"
+            "    '%' . sanitize_text_field( $_GET['q'] ) . '%'\n"
+            ") );\n",
+            encoding="utf-8")
+        summary, _ = scan_json(safe_dir)
+        check("误报控制：prepare 正确用法不报 HIGH", summary.get("HIGH") == 0,
+              json.dumps(summary, ensure_ascii=False))
+
+        up_dir = tmp / "upload"
+        up_dir.mkdir()
+        (up_dir / "u.php").write_text(
+            "<?php\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+            "move_uploaded_file( $tmp, $dest );\n",
+            encoding="utf-8")
+        summary, findings = scan_json(up_dir)
+        mv = [f for f in findings if f["category"] == "file"]
+        check("误报控制：move_uploaded_file 不判 HIGH",
+              summary.get("HIGH") == 0 and bool(mv),
+              f"HIGH={summary.get('HIGH')} 提示级={len(mv)}")
+
+        # ---- 测试 6: check_php_syntax 无 PHP 路径 ----
         env_nophp = dict(os.environ)
         env_nophp["PATH"] = str(tmp / "no-such-bin-dir")
         proc = subprocess.run([sys.executable, str(SYNTAX_CHECK), str(plugin_dir)],
@@ -342,7 +625,7 @@ def main() -> int:
               proc.returncode == 0 and "跳过" in proc.stdout,
               proc.stdout.strip().splitlines()[0][:60] if proc.stdout.strip() else "无输出")
 
-        # ---- 测试 5: check_php_syntax 有 PHP 路径 ----
+        # ---- 测试 7: check_php_syntax 有 PHP 路径 ----
         if php:
             env_php = dict(os.environ)
             env_php["PATH"] = str(Path(php).parent) + os.pathsep + env_php.get("PATH", "")
@@ -355,13 +638,14 @@ def main() -> int:
         else:
             skip("有 PHP 时语法检查正常执行", "未检测到 PHP CLI")
 
-        # ---- 测试 6: 版本保鲜不阻塞 ----
+        # ---- 测试 8: 版本保鲜不阻塞 ----
         proc = run(VERSION_CHECK)
         check("版本保鲜检查退出码恒为 0", proc.returncode == 0,
               proc.stdout.strip().splitlines()[0][:60] if proc.stdout.strip() else "")
 
     failed = [name for name, ok, _ in RESULTS if not ok]
-    print(f"\n总计 {len(RESULTS)} 项: 通过 {len(RESULTS) - len(failed)}, 失败 {len(failed)}, 跳过 {len(SKIPS)}")
+    total = len(RESULTS) + len(SKIPS)
+    print(f"\n总计 {total} 项: 通过 {len(RESULTS) - len(failed)}, 失败 {len(failed)}, 跳过 {len(SKIPS)}")
     if failed:
         for name in failed:
             print(f"  - {name}")

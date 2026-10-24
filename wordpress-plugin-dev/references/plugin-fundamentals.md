@@ -31,6 +31,8 @@
 - `Network: true`：仅多站点网络激活时使用
 - **版本号陷阱**：WP 用 PHP `version_compare()` 比较版本，`1.02 > 1.1`。发新版前确认 `version_compare('new','old','>')` 为真
 - **头部值卫生**：从别处复制来的插件名/描述可能带入 `*/`（提前闭合注释、甚至注入代码）、换行（截断 header 字段）、单引号（若该值进入 PHP 字符串字面量会语法错误）；以数字开头的名字做 namespace/常量前缀时须加前缀（`2026 Tools` → `Plugin2026Tools` / `PLUGIN_2026_TOOLS_*`）
+- **非 ASCII（中文）插件名**：WordPress 的 slug / Text Domain 需为小写 ASCII。中文名提取不到 ASCII 片段时若一律回退到固定值会导致**多个插件生成到同一目录**（第二个直接失败）；正确做法是用名称哈希生成稳定且唯一的 slug，或用 `--slug` 显式指定
+- **`Update URI` 的副作用**：设置 `Update URI` 后，WordPress 将不再从 wordpress.org 更新该插件，只认自建源。发布到 wordpress.org 的插件**不应**设置此字段（第三方分发的才需要）
 
 ## 2. 目录结构（推荐）
 
@@ -90,6 +92,35 @@ class SettingsPage {}
 ```
 
 守卫写在 namespace 之前会直接 Fatal error（"Namespace declaration statement has to be the very first statement"），插件一激活就白屏——肉眼审查极易漏掉，务必用 `php -l` 或本 skill 的 `scripts/check_php_syntax.py` 验证。
+
+**钩子快照陷阱（致命且静默）**：`WP_Hook::apply_filters()` 遍历的是**当前优先级回调的快照**。因此在某个回调内部再 `add_action()` 到**同一个钩子、同一优先级**，新注册的回调在本次 `do_action` 中**不会执行**——而该钩子通常只触发一次，于是子模块的 `init()` 永远不会被调用。
+
+典型症状：插件能正常激活、没有报错，但 REST 路由不注册、设置页不出现、块不显示、ability 注册不上——`php -l` 完全查不出来（语法没问题）。
+
+错误写法：
+
+```php
+// Plugin.php（挂在 plugins_loaded 上）
+public static function init(): void {
+    add_action( 'plugins_loaded', array( Admin\SettingsPage::class, 'init' ) ); // ← 永不执行
+    add_action( 'plugins_loaded', array( Api\RestRoutes::class, 'init' ) );     // ← 永不执行
+}
+```
+
+正确写法——**直接调用**子模块的 `init()`：
+
+```php
+public static function init(): void {
+    Admin\SettingsPage::init();  // 子模块内部自己 add_action('admin_menu', ...) 等
+    Api\RestRoutes::init();
+}
+```
+
+注意区分两种情形：
+- 往**别的**钩子注册（`plugins_loaded` 回调里 `add_action('init', ...)`、`add_action('rest_api_init', ...)`）——**没问题**，这些钩子还没触发
+- 往**当前正在执行**的钩子注册（同钩子同优先级）——**不生效**
+
+用本 skill 的 `scripts/wp_stub.php` 做运行时冒烟可自动诊断该模式（它复现了 WP_Hook 的快照语义）。
 
 ## 3. 生命周期钩子
 

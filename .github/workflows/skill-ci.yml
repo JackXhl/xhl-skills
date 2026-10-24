@@ -23,7 +23,7 @@ jobs:
         run: python -m py_compile wordpress-plugin-dev/scripts/*.py
       - name: PHP 可用性（ubuntu 镜像预装，缺失则自测自动跳过语法断言）
         run: php -v
-      - name: 运行技能自测（16 项断言）
+      - name: 运行技能自测（31 项断言）
         run: python wordpress-plugin-dev/scripts/self_test.py
 
   scaffold-php-lint:
@@ -45,9 +45,80 @@ jobs:
             php -l "$f" || fail=1
           done < <(find ./ci-out -name "*.php" -print0)
           exit $fail
-      - name: 运行时冒烟（WordPress 存根：autoloader/namespace/钩子）
+      - name: 运行时冒烟（WordPress 存根：autoloader/namespace/钩子/子模块真实执行）
         shell: bash
         run: php wordpress-plugin-dev/scripts/wp_stub.php ./ci-out/ci-test-plugin/ci-test-plugin.php
+
+  stub-detects-snapshot-trap:
+    name: 存根可诊断 plugins_loaded 快照陷阱（ubuntu）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PHP 可用性
+        run: php -v
+      # 回归护栏：脚手架若改回"在 plugins_loaded 回调内重复 add_action"，
+      # 子模块 init 将永不执行。此处用一个故意写错的插件验证存根能报 FAIL。
+      - name: 构造致命模式样本并确认存根报 FAIL
+        run: |
+          set -e
+          mkdir -p trap/src/Api
+          cat > trap/trap.php <<'PHP'
+          <?php
+          if ( ! defined( 'ABSPATH' ) ) { exit; }
+          define( 'TRAP_DIR', plugin_dir_path( __FILE__ ) );
+          require_once TRAP_DIR . 'src/autoload.php';
+          add_action( 'plugins_loaded', array( Trap\Plugin::class, 'init' ) );
+          PHP
+          cat > trap/src/autoload.php <<'PHP'
+          <?php
+          if ( ! defined( 'ABSPATH' ) ) { exit; }
+          spl_autoload_register( function ( string $class ): void {
+              $prefix = 'Trap\\';
+              if ( strpos( $class, $prefix ) !== 0 ) { return; }
+              $file = TRAP_DIR . 'src/' . str_replace( '\\', '/', substr( $class, strlen( $prefix ) ) ) . '.php';
+              if ( file_exists( $file ) ) { require_once $file; }
+          } );
+          PHP
+          cat > trap/src/Plugin.php <<'PHP'
+          <?php
+          namespace Trap;
+          if ( ! defined( 'ABSPATH' ) ) { exit; }
+          class Plugin {
+              public static function init(): void {
+                  add_action( 'plugins_loaded', array( Api\RestRoutes::class, 'init' ) );
+              }
+          }
+          PHP
+          cat > trap/src/Api/RestRoutes.php <<'PHP'
+          <?php
+          namespace Trap\Api;
+          if ( ! defined( 'ABSPATH' ) ) { exit; }
+          class RestRoutes {
+              public static function init(): void {
+                  add_action( 'rest_api_init', array( self::class, 'register_routes' ) );
+              }
+              public static function register_routes(): void {
+                  register_rest_route( 'trap/v1', '/x', array( 'methods' => 'GET', 'callback' => '__return_true' ) );
+              }
+          }
+          PHP
+          set +e
+          php wordpress-plugin-dev/scripts/wp_stub.php trap/trap.php > out.txt 2>&1
+          code=$?
+          set -e
+          cat out.txt
+          if [ "$code" -ne 1 ]; then
+            echo "::error::存根未识别快照陷阱（期望退出码 1，实际 $code）"
+            exit 1
+          fi
+          if ! grep -q "快照" out.txt; then
+            echo "::error::存根未输出快照陷阱诊断信息"
+            exit 1
+          fi
+          echo "存根成功诊断快照陷阱"
 
   php81-compat:
     name: 最低支持版本兼容（PHP 8.1）

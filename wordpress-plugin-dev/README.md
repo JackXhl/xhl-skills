@@ -35,7 +35,7 @@ wordpress-plugin-dev/
     ├── wp_security_scan.py    # 静态安全扫描（含污点传播），输出分级报告
     ├── check_php_syntax.py    # php -l 语法检查（无 PHP 环境自动跳过）
     ├── check_wp_versions.py   # 版本保鲜检查（比对 api.wordpress.org）
-    ├── self_test.py           # 技能自测：42 项断言（脚手架/边界输入/运行时钩子/ability 与连接器注册语义/文档事实核对/代码块语法/扫描/误报控制）
+    ├── self_test.py           # 技能自测：43 项断言（脚手架/边界输入/运行时钩子/ability 与连接器注册语义/文档事实核对/代码块语法/编码完整性/扫描/误报控制）
     └── wp_stub.php            # 最小 WordPress 运行时存根：真正执行钩子并诊断引导链路断裂
 ```
 
@@ -74,7 +74,7 @@ python scripts/self_test.py
 - **脚手架产出**：全选项生成的 10 个 PHP 文件经 PHP 8.4 `php -l` 逐一验证（曾借此修复 namespace 声明位置导致的 7 文件致命错误）
 - **运行时冒烟**：`wp_stub.php` 复现 WordPress `WP_Hook` 的快照语义并**真正执行**钩子回调（带参动作钩子会正确传入回调参数），可诊断三类致命模式："在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')` 导致子模块永不执行"、"ability 分类未注册 / 挂错钩子"、"连接器重复注册"（曾借此发现并修复脚手架自身的静默致命缺陷）
 - **文档事实核对**：所有 API 断言均逐条比对官方 developer.wordpress.org 参考页与核心源码（2026-10-24 核实）。曾据此修正内置连接器 ID（`anthropic`/`google`/`openai`，**无 `core/` 前缀**）、`wp_get_connector()` 的返回结构（**不含 base_url 与明文密钥**）、`wp_supports_ai()` 为零参数、ability 的 5 个必填参数、Abilities REST 端点与 annotations 决定的 HTTP 方法、WP 7.1 新增的 4 个执行生命周期过滤器、MCP Adapter 为独立包而非核心等 11 处事实偏差
-- **自测套件**：`self_test.py` 42 项断言全绿（PHP 8.4 环境下 42/42 通过、零跳过）；含中文名 slug 冲突、子模块引导方式、钩子真实触发、ability 分类/注册顺序与钩子归属语义、连接器注册诊断、**文档事实准确性核对**（连接器 ID / 零参数签名 / 7.1 过滤器 / REST 端点 / MCP 非核心）、**references 全量 PHP 代码块 php -l**、污点传播、误报控制、数字开头/单引号/`*/` 注入等边界输入；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
+- **自测套件**：`self_test.py` 43 项断言全绿（PHP 8.4 环境下 43/43 通过、零跳过）；含中文名 slug 冲突、子模块引导方式、钩子真实触发、ability 分类/注册顺序与钩子归属语义、连接器注册诊断、**文档事实准确性核对**（连接器 ID / 零参数签名 / 7.1 过滤器 / REST 端点 / MCP 非核心）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 检查）**、污点传播、误报控制、数字开头/单引号/`*/` 注入等边界输入；对 Windows 实时杀软（火绒/Defender）隔离夹具的场景内置重试与跳过韧性
 - **CI**：`.github/workflows/skill-ci.yml` 在 ubuntu（自测套件）与 windows（脚手架 php -l + 运行时冒烟）双平台运行
 
 ## License

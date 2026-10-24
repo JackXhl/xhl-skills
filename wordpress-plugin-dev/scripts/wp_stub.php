@@ -64,7 +64,7 @@ function remove_filter( $tag, $cb, $priority = 10 ) { return true; }
  * 因此"在回调执行中注册到同优先级的回调"不会在本次执行中跑。
  *
  * $args 为传给回调的参数（对齐 do_action( $tag, ...$args )）。
- * 官方有些动��带参数，例如 wp_connectors_init 会传入 WP_Connector_Registry 实例；
+ * 官方有些动作带参数，例如 wp_connectors_init 会传入 WP_Connector_Registry 实例；
  * 不传参数会导致回调因实参不足而报错。
  */
 function wp_stub_do_action( $tag, ...$args ) {

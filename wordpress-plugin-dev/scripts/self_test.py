@@ -628,6 +628,26 @@ def main() -> int:
         else:
             skip("references 全部 PHP 代码块 php -l 通过", "未检测到 PHP CLI")
 
+        # ---- 测试 1l: 全部文件编码完整（无替换字符 / 非 UTF-8）----
+        # 中文注释在批量编辑时可能被截断成 U+FFFD 替换字符，
+        # 肉眼很难发现，但会污染交付物。用显式扫描兜住。
+        enc_bad = []
+        for f in sorted(SCRIPTS.parent.rglob("*")):
+            if f.is_dir() or "__pycache__" in f.parts or f.suffix == ".pyc":
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                enc_bad.append(f"{f.relative_to(SCRIPTS.parent)}: 非 UTF-8")
+                continue
+            for ln, line in enumerate(text.splitlines(), 1):
+                if "\ufffd" in line:
+                    enc_bad.append(
+                        f"{f.relative_to(SCRIPTS.parent)}:{ln} 含替换字符")
+                    break
+        check("全部文件编码完整（无 U+FFFD 替换字符）",
+              not enc_bad, "; ".join(enc_bad[:3]) if enc_bad else "无损坏字符")
+
         # ---- 测试 2: 扫描器对干净产出 ----
         summary, _ = scan_json(plugin_dir)
         check("干净产出 HIGH=0 且 MEDIUM=0",

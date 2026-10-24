@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import shutil
 import subprocess
@@ -36,14 +37,58 @@ def ensure_utf8_stdout() -> None:
             except (ValueError, OSError):
                 pass
 
-CANDIDATES = ["php", "php8", "php8.3", "php8.2", "php8.1", "php.exe"]
+CANDIDATES = ["php", "php8", "php8.4", "php8.3", "php8.2", "php8.1", "php.exe"]
+
+# 常见安装位置（含未加入 PATH 的解压版 / XAMPP / WAMP / Scoop）
+COMMON_GLOBS = [
+    r"C:\php\php.exe",
+    r"C:\tools\php\php.exe",
+    r"C:\Program Files\PHP\php.exe",
+    r"C:\Program Files\php\php.exe",
+    r"C:\xampp\php\php.exe",
+    r"C:\laragon\bin\php\php.exe",
+    r"C:\wamp64\bin\php\php.exe",
+    r"C:\wamp\bin\php\php.exe",
+    r"D:\php\php.exe",
+    r"D:\tool\php\php.exe",
+    r"D:\tool\php\php-*\php.exe",
+    r"C:\Users\*\AppData\Local\Temp\php\php.exe",
+    r"C:\Users\*\scoop\apps\php\current\php.exe",
+]
 
 
 def find_php() -> str | None:
+    """定位 PHP CLI：PHP_BIN 环境变量 → PATH → 常见安装位置。
+
+    只查 PATH 会漏掉"已安装但未加入 PATH"的 PHP，导致语法检查被静默跳过、
+    用户以为通过了。顺序与 self_test.py 保持一致。
+
+    设 `WP_DEV_NO_PHP_SEARCH=1` 可关闭 PATH 之外的兜底扫描（仅供测试
+    构造"无 PHP"环境使用）。
+    """
+    env = os.environ.get("PHP_BIN", "").strip()
+    if env:
+        if os.path.isfile(env):
+            return env
+        found = shutil.which(env)
+        if found:
+            return found
+
     for name in CANDIDATES:
         path = shutil.which(name)
         if path:
             return path
+
+    if os.environ.get("WP_DEV_NO_PHP_SEARCH", "").strip() in ("1", "true", "yes"):
+        return None
+
+    for pattern in COMMON_GLOBS:
+        try:
+            for cand in sorted(glob.glob(pattern), reverse=True):
+                if os.path.isfile(cand):
+                    return cand
+        except (OSError, ValueError):
+            continue
     return None
 
 

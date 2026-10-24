@@ -38,7 +38,9 @@
 | 整数 | `absint` / `intval` |
 | 布尔 | `rest_sanitize_boolean` |
 | 数组 | 按值类型递归处理，白名单键 |
-| SQL 标识符（表/列名） | 白名单校验，`$wpdb->prepare` 不能参数化标识符 |
+| SQL 标识符（表/列名） | 白名单校验。`$wpdb->prepare()` 不能参数化标识符（`%i` 占位符需 **WP 6.2+** 才支持，且仍建议白名单） |
+| meta 值 | `sanitize_meta( $meta_key, $meta_value, $object_type, $object_subtype )`（按注册时声明的 `sanitize_callback` 走） |
+| 去斜杠（读超全局后） | `wp_unslash()`（**先于**任何 sanitize） |
 
 ## 4. 转义函数表（输出侧）
 
@@ -49,8 +51,12 @@
 | URL（href/src） | `esc_url` |
 | 富文本（post 级） | `wp_kses_post` |
 | 翻译 + 转义合一 | `esc_html__` / `esc_attr__` |
-| JS 内联数据 | `wp_json_encode` + `wp_add_inline_script`（勿手拼字符串） |
+| JS 内联数据 | `wp_json_encode` + `wp_add_inline_script`（勿手拼字符串；**不要用 `wp_localize_script`**——它会把标量强转字符串、丢类型，官方要求它只用于本地化字符串） |
 | `<script>` 内容 | 禁止直接输出用户数据 |
+
+⚠️ **净化不等于转义**：`sanitize_*` 是输入侧清洗（改写值），`esc_*` 是输出侧编码（改写字符）。二者不能互相替代——存进库的原始值应该在读取后按上下文 `esc_*` 输出；入库时用 `esc_html` 会把 `&` 变成 `&amp;` 并永久破坏数据。
+
+⚠️ **`wp_unslash()` 先于净化**：WP 通过私有 `wp_magic_quotes()` 给 `$_GET`/`$_POST`/`$_COOKIE`/`$_SERVER` 加了斜杠，必须先 `wp_unslash()` 再 sanitize。它只处理字符串与数组（递归），其他类型原样返回。
 
 ## 5. 危险函数黑名单（静态扫描依据）
 
@@ -63,7 +69,7 @@
 - 反序列化：`unserialize($_POST/$_COOKIE)`
 - SQL 注入：`$wpdb->query/get_results` 等直接拼接用户输入（应改用 `prepare`）
 - 回调滥用：`call_user_func` / `call_user_func_array` 的第一个参数来自用户输入
-- REST 缺参：`register_rest_route` 未提供 `permission_callback`（WP 6.5+ 必填）
+- REST 缺参：`register_rest_route` 未提供 `permission_callback`（**WP 5.5 起**缺失即触发 `_doing_it_wrong()`；路由仍会注册，所以别指望它报错来提醒你）
 
 ## 6. 常见漏洞模式
 

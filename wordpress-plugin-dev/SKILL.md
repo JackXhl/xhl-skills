@@ -1,6 +1,6 @@
 ---
 name: wordpress-plugin-dev
-version: 1.3.0
+version: 1.4.0
 description: WordPress 插件开发、审查、加固与发布技能。当任务涉及 WordPress 插件/主题代码（plugin.php、wp-content/plugins、add_action/add_filter、register_setting、wp_remote_*、admin-ajax、REST 路由、block.json、Gutenberg 块、WP 7.0+ AI Client / Connectors API / Abilities API、wp_register_ability、wp_ai_client_prompt、readme.txt 提交 wordpress.org）时使用。覆盖：新建插件脚手架、功能实现、代码审查、安全审计（nonce/capability/净化/转义）、性能优化、AI 功能集成、发布前检查。WordPress plugin development, security audit, Gutenberg, REST API, AI Client, Abilities API.
 author: xhl-skills
 license: MIT
@@ -68,15 +68,17 @@ agent_created: true
 4. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
 5. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
 6. 发布类任务额外跑 `release-and-quality.md` 的清单
-7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（43 项断言，含杀软环境韧性）
+7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（61 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
 **安全**
 - 浏览器/管理端会改变数据的操作：**同时**校验 capability（授权）与 nonce（意图）。`current_user_can()` 管授权，`wp_nonce_field()` / `check_admin_referer()` / `check_ajax_referer()` / `wp_verify_nonce()` 管 CSRF
 - 把请求数据、选项、meta、短代码属性、REST 载荷、第三方响应全部视为不可信输入
-- 输入侧 sanitize（`sanitize_text_field`、`absint`、`sanitize_key`、`wp_kses`…），输出侧按上下文 escape（`esc_html`、`esc_attr`、`esc_url`、`wp_kses_post`…）；"先净化再校验"优于"只净化"
-- 每条 REST 路由必须给真实的 `permission_callback`；绝不用 `__return_true` 公开敏感数据
+- 输入侧 sanitize（`sanitize_text_field`、`absint`、`sanitize_key`、`wp_kses`…），输出侧按上下文 escape（`esc_html`、`esc_attr`、`esc_url`、`wp_kses_post`…）；"先净化再校验"优于"只净化"。**净化 ≠ 转义**：净化改写值、转义改写字符，入库时别用 `esc_*`
+- 读 `$_POST`/`$_GET`/`$_REQUEST`/`$_COOKIE` 一律先 `wp_unslash()`（WP 内部 `wp_magic_quotes()` 已加斜杠）再 sanitize
+- 传数据给 JS 用 `wp_add_inline_script` + `wp_json_encode`，**不要用 `wp_localize_script`**（它把标量强转字符串、丢类型）
+- 每条 REST 路由必须给真实的 `permission_callback`（**WP 5.5 起缺失即触发 `_doing_it_wrong()`**，但路由仍会注册，别指望它拦住你）；绝不用 `__return_true` 公开敏感数据
 - SQL 一律 `$wpdb->prepare()`；不拼接用户输入（`prepare()` 的**格式串**里插值变量同样等于拼接，必须用 `%s` 占位符传参）
 - 禁止 `eval`、`assert`、`create_function`、`preg_replace` 的 /e、`base64_decode` 执行、`exec`/`shell_exec`/`system`/`proc_open`、`extract($_GET)`、`unserialize($_POST)`、`move_uploaded_file` 处理未校验上传
 - 所有 PHP 文件顶部 `if ( ! defined( 'ABSPATH' ) ) exit;`
@@ -100,9 +102,9 @@ agent_created: true
 ### scripts/
 - `scaffold_plugin.py` — 生成符合规范的插件骨架（完整头部、ABSPATH 守卫、PSR-4 autoloader、uninstall.php、readme.txt、可选 --with-rest/--with-settings/--with-blocks/--with-ai 桩代码；自动防护命名空间/常量名以数字开头、单引号断裂、头部注释注入、非 ASCII 名 slug 冲突等边界输入）
 - `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、**污点传播**（超全局 → 变量 → `$wpdb->`/include/call_user_func/unserialize/文件写入）、SQL 拼接（含 `prepare()` 格式串插值）、缺失 nonce/capability、`wp_ajax_nopriv_`、`__return_true` 权限回调、REST 缺 `permission_callback`、短代码未转义、隐藏文件、外联域名清单，输出分级报告（`base64_decode`/`file_put_contents`/`move_uploaded_file` 等常见合法用法仅作提示级报告，不判 HIGH）
-- `check_php_syntax.py` — PHP CLI 探测 + `php -l`（无 PHP 时优雅跳过）
+- `check_php_syntax.py` — PHP CLI 探测 + `php -l`。探测顺序：`PHP_BIN` 环境变量 → PATH → 常见安装位置（XAMPP/WAMP/Laragon/scoop/解压版，含未加入 PATH 的情况）——**只查 PATH 会让"已装 PHP"的机器静默跳过语法检查**；设 `WP_DEV_NO_PHP_SEARCH=1` 可关闭兜底扫描
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
-- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、ability 与连接器注册语义、**文档事实准确性核对**（连接器 ID / 零参数签名 / WP 7.1 过滤器 / REST 端点 / MCP 非核心）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 替换字符检查）**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、ability 与连接器注册语义、**文档事实准确性核对**（连接器 ID / 零参数签名 / WP 7.1 过滤器 / REST 端点 / MCP 非核心 / **第 9 轮：菜单函数 capability 参数位置、dbDelta 空格误解、permission_callback 5.5 起、register_setting 无 permission_callback、register_meta 用 auth_callback、wp_localize_script 强转字符串、wp_unslash 语义、Requires 头部版本归属、apiVersion 3、Interactivity data-wp-interactive、Plugin Check (PCP)、资产文件名规范**）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 替换字符检查）**、**PHP CLI 探测（PHP_BIN/PATH/常见位置三级 + 无 PHP 降级）**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
 - `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并**真正执行** `plugins_loaded`/`init`/`rest_api_init`/`admin_*`/`wp_abilities_api_*`/`wp_connectors_init` 钩子（**带参动作钩子会正确传入回调参数**，如 `wp_connectors_init` 传注册表实例），验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册与回调执行；并能诊断三类致命模式——"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')`"导致子模块永不执行、ability 分类未注册/挂错钩子、连接器重复注册（`php -l` 只管语法，这个管运行时）
 
 ### references/
@@ -140,6 +142,13 @@ agent_created: true
 | **连接器密钥取不到** | `wp_get_connector()` 只返回**元数据**（name/description/type/authentication/plugin），**不含 base_url 也不含明文密钥**；密钥要按 `authentication.setting_name` / `constant_name` / `env_var_name` 自行读取，优先级为 环境变量 → PHP 常量 → 数据库 |
 | **AI 调用返回 WP_Error / 调用到不存在的方法** | `generate_text()` 返回 `string\|WP_Error`；取元数据用 `generate_text_result()` + `toText()`（camelCase），**不是** `get_text()`；站点未配置 Connector 时用 `is_supported_for_text_generation()` 先探测 |
 | CPT 404 | 激活时未 `flush_rewrite_rules()`，或正常请求里刷了（性能反模式） |
+| **子菜单页面对所有人不可见 / 权限错乱** | `add_submenu_page()` 的 capability 在**第 4** 个参数（`$parent_slug, $page_title, $menu_title, $capability, ...`），不是第 3 个；`add_menu_page()` / `add_options_page()` 才在第 3 个。照抄"第三个参数是 capability"会把 capability 传到 `$menu_title` |
+| **REST 路由意外公开** | `register_rest_route` 未给 `permission_callback` **自 WP 5.5 起触发 `_doing_it_wrong()` 但不会阻止路由注册**——不写等于裸奔，务必显式给（公开数据写 `__return_true`） |
+| **JS 拿到的是字符串而非布尔/数字** | 用了 `wp_localize_script`：它内部把所有标量强转字符串并做 `html_entity_decode`。传数据用 `wp_add_inline_script` + `wp_json_encode` |
+| **存进去的 `&` 变成了 `&amp;`** | 入库时用了 `esc_html`/`esc_attr`。净化（`sanitize_*`）与转义（`esc_*`）是两件事：入库用净化，输出才转义 |
+| **读到的值多了一层反斜杠** | 忘了 `wp_unslash()`：WP 内部 `wp_magic_quotes()` 已给超全局加过斜杠 |
+| **dbDelta 建表不生效** | 硬性要求是**每个字段/索引单独一行**、字段名在行首；"PRIMARY KEY 必须两个空格"是误解（官方正则是 `\s+`，一个空格即可） |
+| **插件目录里读不到自建版本更新** | 设了 `Update URI` 指向非 wp.org 地址后，wp.org API 就不再返回该插件的更新——这是预期行为，第三方分发才需要设；发布到 wp.org 的插件不要设 |
 | "Invalid block" | 属性结构变更未写 `deprecated` 迁移 |
 | 安全回归 | nonce 有但 capability 漏；输入净化了但输出未转义 |
 | AI 功能不显示 | 未探测 `wp_supports_ai()` / 站点未配置 Connector；模型不支持某能力 |

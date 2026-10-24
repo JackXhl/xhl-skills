@@ -9,20 +9,21 @@
 ## 2. 静态分析与测试
 
 - **PHPStan** + `wp-phpstan`（WordPress 桩 + 扩展规则）；第三方类缺失时建 baseline 逐步收紧
-- **Plugin Check**（wordpress.org 官方检查插件，含 PCP 检查项）：发布前必跑，处理所有 error
+- **Plugin Check (PCP)**（wordpress.org 官方检查插件，仓库 `github.com/WordPress/plugin-check`）：发布前必跑，处理所有 error。可用后台界面（Tools > Plugin Check）或 WP-CLI `wp plugin check hello.php`；**CLI 默认只跑静态检查**，要含运行时检查需 `--require=./wp-content/plugins/plugin-check/cli.php`。它不能替代人工评审，只是提前暴露常见问题
 - **测试**：PHPUnit + WP 测试库（`wp-env` 起本地环境，`wp-env start` 后 `composer test`）；E2E 可上 Playground
 - 最低验证矩阵：支持的 WP 最低版 × 最新版 × PHP 最低版 × 推荐版；多站点（如插件涉网络功能）
+- 注意 WP 7.0 / 7.1 的最低 PHP 要求是 **7.4**（`$required_php_version`），插件声明 `Requires PHP` 不要高于实际运行环境的上限
 
 ## 3. wordpress.org 提交清单
 
-1. `readme.txt` 规范格式（stable tag、requires at least、tested up to、changelog、short description ≤150 字符）
+1. `readme.txt` 规范格式：短描述 **≤150 字符**（超出会被截断）、`Stable tag`（插件自身版本号，非 WP 版本）、`Requires at least`、`Tested up to`（只填主版本号，目录会自动补次版本号）、`Requires PHP`、`License`；changelog 保留当前大版本 + 上一个大版本，更早的移到 `changelog.txt`。**自 WP 5.8 起 readme.txt 不再解析 `Requires PHP` / `Requires at least`，这两个值以主 PHP 文件头部为准**
 2. GPL 兼容许可（整包 GPLv2 or later；第三方库逐个核对）
-3. 命名/商标：slug 不用他人商标；插件名不含 "WordPress" 开头；`Plugin URI` 唯一
-4. 头部 `Update URI` 填自有地址（防覆盖）；若走 SVN 托管则不需要
-5. 不含：调用 home 的电话上报、无说明的加密/混淆代码、后门式远程代码、伪造 WP 核心文件
-6. `Requires Plugins` 声明依赖；国际化用 `wordpress.org/translations` 托管
-7. 资产：截图放 `assets/`（或 `.wordpress-org`），图标 SVG 128×128 内
-8. 首次提交后等 review（通常 ≤14 天），按评审意见改
+3. 命名/商标：**slug** 不得以他人商标/项目名开头（含 "wordpress"、"plugin" 等，仅极端情况例外）；slug 只允许英文字母和数字；slug 提交后不可改（显示名可随时改）
+4. 头部 `Update URI` 填自有地址（防被 wp.org 同名插件覆盖）；**发布到 wordpress.org 的插件不要设这个字段**
+5. 不含：未经同意的对外电话上报（phoning home）、无说明的加密/混淆代码、后门式远程代码、伪造 WP 核心文件；对外链需用户明确同意
+6. `Requires Plugins` 声明依赖（WP 6.5+）；国际化用 `wordpress.org/translations` 托管
+7. 资产：SVN 仓库**顶层** `assets/` 目录（与 `trunk/`、`tags/` 同级，**不是** `trunk/assets`）；文件名即尺寸——横幅 `banner-772x250.png`（Retina `banner-1544x500.png`），图标 `icon-128x128.png|jpg|gif`（Retina `icon-256x256.*`）或 `icon.svg`（**用 SVG 必须同时提供 PNG 兜底**），截图 `screenshot-1.png` 起编号，文件名全小写
+8. 首次提交后等待 review：官方称**在 14 个工作日内**完成初审；三个月内未完成的提交会被拒绝（期间有进展则保持开启）
 
 ## 4. 版本策略与维护
 

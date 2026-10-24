@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -169,10 +170,53 @@ def run(script: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def find_php() -> str | None:
-    for name in ("php", "php8", "php8.3", "php8.2", "php8.1", "php.exe"):
+    """定位 PHP CLI。
+
+    依次尝试：PHP_BIN 环境变量 → PATH 上的常见名字 → 常见安装位置。
+    只查 PATH 会漏掉"已安装但未加入 PATH"的 PHP（如解压版放在
+    AppData\\Temp 或自定义目录），导致所有 php -l 断言被静默跳过。
+    """
+    env = os.environ.get("PHP_BIN", "").strip()
+    if env:
+        p = Path(env)
+        if p.is_file():
+            return str(p)
+        found = shutil.which(env)
+        if found:
+            return found
+
+    for name in ("php", "php8", "php8.4", "php8.3", "php8.2", "php8.1", "php.exe"):
         path = shutil.which(name)
         if path:
             return path
+
+    # 兜底扫描可被显式关闭（供测试构造"无 PHP"环境）
+    if os.environ.get("WP_DEV_NO_PHP_SEARCH", "").strip() in ("1", "true", "yes"):
+        return None
+
+    # 常见安装位置（含未加入 PATH 的解压版）
+    globs = [
+        r"C:\php\php.exe",
+        r"C:\tools\php\php.exe",
+        r"C:\Program Files\PHP\php.exe",
+        r"C:\Program Files\php\php.exe",
+        r"C:\xampp\php\php.exe",
+        r"C:\laragon\bin\php\php.exe",
+        r"C:\wamp64\bin\php\php.exe",
+        r"C:\wamp\bin\php\php.exe",
+        r"D:\php\php.exe",
+        r"D:\tool\php\php.exe",
+        r"D:\tool\php\php-*\php.exe",
+        r"C:\Users\*\AppData\Local\Temp\php\php.exe",
+        r"C:\Users\*\scoop\apps\php\current\php.exe",
+    ]
+    for pattern in globs:
+        try:
+            for cand in sorted(glob.glob(pattern), reverse=True):
+                if os.path.isfile(cand):
+                    return cand
+        except (OSError, ValueError):
+            continue
     return None
 
 
@@ -648,6 +692,130 @@ def main() -> int:
         check("全部文件编码完整（无 U+FFFD 替换字符）",
               not enc_bad, "; ".join(enc_bad[:3]) if enc_bad else "无损坏字符")
 
+        # ---- 测试 1m: 第 9 轮事实核对守卫（对照官方参考页 + WP 7.1 核心源码）----
+        #
+        # 背景：第 9 轮审查把参考文档的密集 API 表格逐条比对官方参考页与
+        # WP 7.1 核心源码，发现 10 处硬错误（参数位置、版本号、行为描述
+        # 与官方不符）与 9 处关键遗漏。这类错误同样不会让任何测试失败，
+        # 必须用显式断言钉死。
+        hooks_ref = (SCRIPTS.parent / "references" / "hooks-and-core-apis.md")
+        guten_ref = (SCRIPTS.parent / "references" / "gutenberg-and-frontend.md")
+        sec_ref = (SCRIPTS.parent / "references" / "security-checklist.md")
+        fund_ref = (SCRIPTS.parent / "references" / "plugin-fundamentals.md")
+        rel_ref = (SCRIPTS.parent / "references" / "release-and-quality.md")
+
+        if all(p.is_file() for p in (hooks_ref, guten_ref, sec_ref, fund_ref, rel_ref)):
+            hooks_text = hooks_ref.read_text(encoding="utf-8")
+            guten_text = guten_ref.read_text(encoding="utf-8")
+            sec_text = sec_ref.read_text(encoding="utf-8")
+            fund_text = fund_ref.read_text(encoding="utf-8")
+            rel_text = rel_ref.read_text(encoding="utf-8")
+
+            # 1) add_submenu_page 的 capability 在第 4 位，不是第 3 位。
+            #    官方签名：add_submenu_page( $parent_slug, $page_title, $menu_title, $capability, ... )
+            check("文档区分 add_submenu_page（capability 第4位）与 add_menu_page/add_options_page（第3位）",
+                  "第 4" in hooks_text and "第 3" in hooks_text
+                  and "add_submenu_page" in hooks_text,
+                  "三个菜单函数的 capability 参数位置必须分别说明")
+
+            # 2) dbDelta 的 "PRIMARY KEY 必须两个空格" 是误解——
+            #    官方正则 PRIMARY\s+KEY|(?:UNIQUE|FULLTEXT|SPATIAL)\s+(?:KEY|INDEX)|KEY|INDEX
+            check("文档未声称 dbDelta 的 PRIMARY KEY 需要两个空格",
+                  "双空格格式要求" not in hooks_text
+                  and ("一个空格即可" in hooks_text or "一个空格" in hooks_text),
+                  "dbDelta 硬性要求是每字段单独一行")
+
+            # 3) register_rest_route 的 permission_callback 自 WP 5.5 起必填（不是 6.5+）
+            check("文档载明 permission_callback 自 WP 5.5 起必填",
+                  "5.5" in hooks_text and "6.5+" not in
+                  re.search(r"permission_callback[^\n]*", hooks_text).group(0)
+                  if re.search(r"permission_callback[^\n]*", hooks_text) else False,
+                  "官方源码 @since 5.5.0")
+            check("安全清单未把 permission_callback 必填版本写成 6.5+",
+                  "WP 6.5+ 必填" not in sec_text and "5.5" in sec_text, "")
+
+            # 4) register_setting() 没有 permission_callback 参数
+            check("文档载明 register_setting 无 permission_callback 参数",
+                  "register_setting" in hooks_text and "没有" in hooks_text
+                  and "permission_callback" in hooks_text, "")
+
+            # 5) register_meta 的权限回调键名是 auth_callback，不是 permission_callback
+            check("文档载明 register_meta 用 auth_callback 而非 permission_callback",
+                  "auth_callback" in hooks_text, "")
+
+            # 6) wp_localize_script 不该用于传数据；官方推荐 wp_add_inline_script + wp_json_encode
+            check("文档推荐 wp_add_inline_script + wp_json_encode 且劝退 wp_localize_script 传数据",
+                  "wp_add_inline_script" in guten_text and "wp_json_encode" in guten_text
+                  and "wp_localize_script" in guten_text
+                  and "wp_localize_script" in sec_text,
+                  "")
+            check("文档不再示范用 wp_localize_script 传 ajaxUrl/nonce",
+                  "wp_localize_script( 'my-plugin-admin'" not in guten_text
+                  and "MyPluginData', array(" not in guten_text,
+                  "示例已改为 wp_add_inline_script")
+
+            # 7) wp_unslash 只处理字符串与数组；且要先于 sanitize
+            check("文档载明 wp_unslash 先于 sanitize 且只处理字符串/数组",
+                  "wp_unslash" in hooks_text and "wp_unslash" in sec_text
+                  and ("只对字符串去斜杠" in hooks_text or "只处理字符串" in hooks_text
+                       or "只处理字符串与数组" in hooks_text), "")
+
+            # 8) Requires at least / Requires PHP 自 WP 5.3 起从主文件读取（不是 5.5+/5.1+）
+            check("文档载明 Requires at least / Requires PHP 自 WP 5.3 起支持",
+                  "5.3" in fund_text and "5.5+/5.1+" not in fund_text, "")
+            check("文档载明 Requires Plugins 为 WP 6.5+ 且 Update URI 为 WP 5.8+",
+                  "6.5+" in fund_text and "5.8+" in fund_text, "")
+
+            # 9) apiVersion 3 对应 WP 6.3+
+            check("文档载明 apiVersion 3 对应 WP 6.3+",
+                  "6.3" in guten_text and "apiVersion" in guten_text, "")
+
+            # 10) Interactivity API 必须有 data-wp-interactive 激活区
+            check("文档载明 Interactivity API 需 data-wp-interactive 声明交互区",
+                  "data-wp-interactive" in guten_text, "")
+
+            # 11) Plugin Check 官方名与 CLI 用法
+            check("文档载明 Plugin Check (PCP) 的官方名与 WP-CLI 用法",
+                  "Plugin Check (PCP)" in rel_text and "wp plugin check" in rel_text, "")
+
+            # 12) 评审时限为 14 个工作日（不是 14 天）
+            check("文档载明初审时限为 14 个工作日",
+                  "14 个工作日" in rel_text, "")
+
+            # 13) 资产在 SVN 顶层 assets/，文件名即尺寸；SVG 需 PNG 兜底
+            check("文档载明资产目录为 SVN 顶层 assets/ 且文件名即尺寸",
+                  "banner-772x250" in rel_text and "icon-128x128" in rel_text
+                  and "PNG 兜底" in rel_text, "")
+
+            # 14) use_block_editor_for_post 是函数（int|WP_Post -> bool）
+            check("文档载明 use_block_editor_for_post 的函数签名与返回值",
+                  "use_block_editor_for_post" in guten_text
+                  and ("WP_Post" in guten_text or "int" in guten_text), "")
+
+            # 15) 保留的 CPT 名称清单
+            check("文档载明 register_post_type 的保留名清单",
+                  "wp_template_part" in hooks_text and "nav_menu_item" in hooks_text, "")
+        else:
+            for label in ("文档区分 add_submenu_page（capability 第4位）与 add_menu_page/add_options_page（第3位）",
+                          "文档未声称 dbDelta 的 PRIMARY KEY 需要两个空格",
+                          "文档载明 permission_callback 自 WP 5.5 起必填",
+                          "安全清单未把 permission_callback 必填版本写成 6.5+",
+                          "文档载明 register_setting 无 permission_callback 参数",
+                          "文档载明 register_meta 用 auth_callback 而非 permission_callback",
+                          "文档推荐 wp_add_inline_script + wp_json_encode 且劝退 wp_localize_script 传数据",
+                          "文档不再示范用 wp_localize_script 传 ajaxUrl/nonce",
+                          "文档载明 wp_unslash 先于 sanitize 且只处理字符串/数组",
+                          "文档载明 Requires at least / Requires PHP 自 WP 5.3 起支持",
+                          "文档载明 Requires Plugins 为 WP 6.5+ 且 Update URI 为 WP 5.8+",
+                          "文档载明 apiVersion 3 对应 WP 6.3+",
+                          "文档载明 Interactivity API 需 data-wp-interactive 声明交互区",
+                          "文档载明 Plugin Check (PCP) 的官方名与 WP-CLI 用法",
+                          "文档载明初审时限为 14 个工作日",
+                          "文档载明资产目录为 SVN 顶层 assets/ 且文件名即尺寸",
+                          "文档载明 use_block_editor_for_post 的函数签名与返回值",
+                          "文档载明 register_post_type 的保留名清单"):
+                check(label, False, "参考文档缺失")
+
         # ---- 测试 2: 扫描器对干净产出 ----
         summary, _ = scan_json(plugin_dir)
         check("干净产出 HIGH=0 且 MEDIUM=0",
@@ -755,8 +923,21 @@ def main() -> int:
               f"HIGH={summary.get('HIGH')} 提示级={len(mv)}")
 
         # ---- 测试 6: check_php_syntax 无 PHP 路径 ----
+        # 注意：find_php() 现在会主动探测常见安装位置（如 XAMPP / Temp\\php），
+        # 只清空 PATH 已不足以制造"无 PHP"环境——必须同时清掉 PHP_BIN，
+        # 并把 HOME/USERPROFILE/TEMP 指向空目录，让 glob 也扫不到任何 php.exe。
         env_nophp = dict(os.environ)
         env_nophp["PATH"] = str(tmp / "no-such-bin-dir")
+        env_nophp.pop("PHP_BIN", None)
+        env_nophp["WP_DEV_NO_PHP_SEARCH"] = "1"
+        fake_home = tmp / "fake-home"
+        fake_home.mkdir(exist_ok=True)
+        env_nophp["USERPROFILE"] = str(fake_home)
+        env_nophp["HOME"] = str(fake_home)
+        env_nophp["TEMP"] = str(fake_home)
+        env_nophp["TMP"] = str(fake_home)
+        env_nophp["LOCALAPPDATA"] = str(fake_home / "AppData" / "Local")
+        (fake_home / "AppData" / "Local").mkdir(parents=True, exist_ok=True)
         proc = subprocess.run([sys.executable, str(SYNTAX_CHECK), str(plugin_dir)],
                               capture_output=True, text=True, encoding="utf-8",
                               errors="replace", env=env_nophp)

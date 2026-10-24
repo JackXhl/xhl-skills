@@ -25,14 +25,14 @@
 ```
 
 字段要点：
-- `Requires at least` / `Requires PHP`：WP 5.5+/5.1+ 起支持，缺失时旧版 WP 不拦截激活
-- `Update URI`：第三方分发必填，防止被同名 wordpress.org 插件更新覆盖
-- `Requires Plugins`：WP 6.5+ 支持，逗号分隔的 wordpress.org slug（不带路径）
+- `Requires at least` / `Requires PHP`：**自 WP 5.3 起**才从插件主 PHP 文件读取（`get_plugin_data()` 的 changelog 明确 "5.3.0 Added support for `Requires at least` and `Requires PHP` headers"）；更早的版本需写在 readme.txt 里。`validate_plugin_requirements()` 自 5.2 引入、5.3 改为读主文件、5.8 移除 readme.txt 回退
+- `Requires Plugins`：**WP 6.5+** 支持（`get_plugin_data()` 6.5.0 changelog），逗号分隔的 wordpress.org slug（不带路径，如 `my-plugin` 而非 `my-plugin/my-plugin.php`；slug 本身不含逗号）
+- `Update URI`：**WP 5.8+** 支持（`get_plugin_data()` 5.8.0 changelog）。官方用途是让第三方插件避免被 wordpress.org 上同名插件的更新覆盖
 - `Network: true`：仅多站点网络激活时使用
 - **版本号陷阱**：WP 用 PHP `version_compare()` 比较版本，`1.02 > 1.1`。发新版前确认 `version_compare('new','old','>')` 为真
 - **头部值卫生**：从别处复制来的插件名/描述可能带入 `*/`（提前闭合注释、甚至注入代码）、换行（截断 header 字段）、单引号（若该值进入 PHP 字符串字面量会语法错误）；以数字开头的名字做 namespace/常量前缀时须加前缀（`2026 Tools` → `Plugin2026Tools` / `PLUGIN_2026_TOOLS_*`）
 - **非 ASCII（中文）插件名**：WordPress 的 slug / Text Domain 需为小写 ASCII。中文名提取不到 ASCII 片段时若一律回退到固定值会导致**多个插件生成到同一目录**（第二个直接失败）；正确做法是用名称哈希生成稳定且唯一的 slug，或用 `--slug` 显式指定
-- **`Update URI` 的副作用**：设置 `Update URI` 后，WordPress 将不再从 wordpress.org 更新该插件，只认自建源。发布到 wordpress.org 的插件**不应**设置此字段（第三方分发的才需要）
+- **`Update URI` 的副作用**：设置后，wordpress.org API 只在 `Update URI` 匹配 `https://wordpress.org/plugins/{$slug}/` 或 `w.org/plugin/{$slug}` 时才返回该插件的更新；填其他值等于**主动放弃 wp.org 更新通道**（插件仍会从自建源更新，前提是自行实现了 `update_plugins_{$hostname}` 过滤器或用了更新检查库）。所以：**发布到 wordpress.org 的插件不要设这个字段**（官方原话："authors of plugins hosted by WordPress.org don't need to use this new header"），第三方自建分发才需要
 
 ## 2. 目录结构（推荐）
 

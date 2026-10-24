@@ -25,7 +25,11 @@ echo wp_kses_post( $text );
 - **特性探测（不发请求、零成本、纯确定性判断）**：
   - `$builder->is_supported_for_text_generation()` / `is_supported_for_image_generation()` / `is_supported_for_text_to_speech_conversion()` / `is_supported_for_speech_generation()` / `is_supported_for_video_generation()` / `is_supported_for_music_generation()` / `is_supported_for_embedding_generation()` / `is_supported()`。展示 AI UI 前先探测
   - **`wp_supports_ai()` 是零参数函数**（官方签名 `wp_supports_ai(): bool`），判断当前环境是否允许使用 AI；受 `WP_AI_SUPPORT` 常量与 `wp_supports_ai` 过滤器控制。**它不接受 feature 参数**——能力维度要用 builder 上的 `is_supported_*()`
+  - **嵌入（embedding）走独立入口**：`wp_ai_client_embedding( ...$input )` 返回 `WP_AI_Client_Embedding_Builder`，**自 WP 7.2.0 起**才提供。嵌入**不会自动选模型**——必须先用 `using_model()` 或 `using_provider_model()` 显式指定，且不同模型产出的向量不可互相比较。该 builder 只有无参的 `is_supported()`（不像 prompt builder 有 `is_supported_for_embedding_generation()`）
 - **阻断提示**：`wp_ai_client_prevent_prompt` 过滤器可阻止提示词执行（返回 `true` 即阻止）；被阻止时 `is_supported_*()` 返回 `false`，生成方法返回 `WP_Error`（error code 为 `prompt_prevented`，status 503）
+  - 过滤器回调**收到的是 builder 的克隆**（只读快照），参数为 `( bool $prevent, WP_AI_Client_Prompt_Builder $builder )`
+  - 若 `wp_supports_ai()` 为 false（AI 被关闭），**错误码同样是 `prompt_prevented`**，但消息是 "AI features are not supported in this environment."——排查时要区分这两种成因
+  - 另注意：**底层抛异常时**（网络错误、SDK 异常），`is_supported_*()` 同样返回 `false`，生成方法返回 `WP_Error`——所以 `false` 不一定意味着"不支持"，也可能意味着"调用失败了"
 - **方法命名是 snake_case**：`WP_AI_Client_Prompt_Builder` 通过魔术方法 `__call` 把 snake_case 代理到底层 SDK 的 camelCase 方法。但**返回的结果对象是 SDK 的原生对象，方法是 camelCase**——这是最容易踩的边界
 - **把 abilities 暴露给模型**：`->using_abilities( 'my-plugin/my-ability', ... )` 会把已注册的 ability 转成模型的 function declaration（函数名加 `wpab__` 前缀），模型即可直接调用你的 ability
 
@@ -112,6 +116,10 @@ add_action( 'wp_abilities_api_init', function (): void {
 
 - 命名：`vendor/ability`，只允许小写字母数字、连字符与斜杠（正则 `^[a-z0-9-]+/[a-z0-9-]+$`）；分类 slug 正则 `^[a-z0-9]+(?:-[a-z0-9]+)*$`
 - **必填参数**（官方标注 Required，缺一即注册失败）：`label`、`description`、`category`、`execute_callback`、`permission_callback`
+  - ⚠️ **版本演进**（`wp_register_ability()` 的 `@since` 标注）：
+    - `category`：**自 7.2.0 起可选**，省略时落到内置的 `uncategorized` 分类（这是一个"逃生舱"分类，给简单或过渡性场景用）。自定义分类仍必须先经 `wp_register_ability_category()` 注册
+    - `permission_callback`：**自 7.2.0 起**，若提供了非空的 `required_capabilities` 列表则可省略——`required_capabilities` 里的每个能力都会在 `permission_callback` 之前用 `current_user_can()` 检查
+    - `ability_class`（可选）：指定自定义 `WP_Ability` 子类；用自定义类时，核心**不再强制**`execute_callback` / `permission_callback` 的注册要求（校验责任转移给子类）
 - input/output schema 用 JSON Schema（WP 实现 draft-04 子集，参考 REST schema 文档）；有入参/返回值时 schema 是强制的
 - **`meta.public`（WP 7.1）**：统一对外暴露意图，REST 生效规则 `show_in_rest ?? public ?? false`（`??` 语义：显式 `false` 会被保留，不视为缺失）；MCP Adapter 从新版起尊重该标志
 - **暴露 ≠ 授权**：`public` 只管可发现性，执行仍必须过 `permission_callback`，永远用真实 capability
@@ -133,29 +141,38 @@ GET|POST|DELETE /wp-json/wp-abilities/v1/abilities/{name}/run
 | annotations | 客户端应使用 |
 |---|---|
 | `readonly: true` | **GET**（只读能力必须用 GET，这是要求不是建议） |
-| `destructive: true` | **DELETE** |
+| `destructive: true` **且** `idempotent: true` | **DELETE** |
 | 其余情况 | **POST** |
 
+⚠️ **DELETE 需要两个标注同时为 true**。官方 `WP_REST_Abilities_V1_Run_Controller::validate_request_method()` 的判定是 `readonly` 优先，其次 `destructive && idempotent` **同时**成立才用 DELETE。只写 `destructive: true` 而不写 `idempotent: true`，会落回 **POST**（不是 DELETE）——这与直觉相反，务必两个都写。
+
+- 路由注册用的是 `WP_REST_Server::ALLMETHODS`（因为注册路由时插件还没注册 ability，官方注释解释了这个取舍），**方法不匹配不会 404，而是返回 405** `rest_ability_invalid_method`
 - GET / DELETE 的 `input` 放在 URL 编码的 `input` 查询参数里；POST 放在 JSON body 的 `{"input": {...}}`
+  - 推论：**`input` 是长文本的能力不要标 `readonly: true`**——那会强制走 GET，长内容塞进 URL 查询串会被服务器截断，且语义上"生成类"操作本就不是幂等的
 - **所有 Abilities REST 端点都要求已认证用户**——匿名用户连"有哪些 ability"都看不到。会话 cookie、应用密码（外部集成首选）、自定义认证插件都可以
-- 常见错误码：`ability_invalid_input`、`ability_invalid_permissions`（403）、`ability_invalid_output`、`ability_missing_input_schema`
+- 常见错误码：`ability_invalid_input`、`ability_invalid_permissions`（403）、`ability_invalid_output`、`ability_missing_input_schema`、`ability_invalid_permission_callback`、`ability_callback_exception`
+- REST 层错误码：`rest_ability_not_found`（404）、`rest_ability_invalid_method`（405）、`rest_ability_cannot_execute`
 - 客户端应当**先读取 ability 元数据再决定方法**，不要按名字硬编码
 
 ### WP 7.1 新增的执行生命周期过滤器
 
-7.1 给 `WP_Ability::execute()` 加了 4 个过滤器（此前只有 `wp_before_execute_ability` / `wp_after_execute_ability` 两个 action，只能观察不能干预）：
+7.1 给 `WP_Ability::execute()` 加了 **6 个**过滤器（此前只有 `wp_before_execute_ability` / `wp_after_execute_ability` 两个 action，只能观察不能干预）：
 
 | 过滤器 | 时机 | 用途 |
 |---|---|---|
 | `wp_pre_execute_ability` | 流水线最前，在归一化/校验/鉴权之前 | 返回非原值即**短路**整个执行（维护模式、限流、缓存、测试 mock） |
 | `wp_ability_normalize_input` | schema 默认值应用后、校验前 | 注入上下文元数据、补充 JSON Schema 表达不了的默认值 |
+| `wp_ability_validate_input` | 输入校验阶段 | 干预/收紧 schema 校验结论；**只在定义了非空 `input_schema` 时才触发** |
 | `wp_ability_permission_result` | `permission_callback` 执行后 | 追加授权规则；**返回 `true` 可以推翻原回调的拒绝，需谨慎** |
 | `wp_ability_execute_result` | 回调返回后、输出校验前 | 改写/脱敏最终结果 |
+| `wp_ability_validate_output` | 输出校验阶段 | 干预输出 schema 校验结论 |
 
-- 执行顺序：`wp_pre_execute_ability` → `normalize_input()` → `wp_ability_normalize_input` → `validate_input()` → `check_permissions()` → `wp_ability_permission_result` → `wp_before_execute_ability` → 回调 → `wp_ability_execute_result` → `validate_output()` → `wp_after_execute_ability`
-- 这 4 个过滤器对**全站每个 ability 都会触发**，回调里务必先按 `$ability_name` 判断目标
+- 执行顺序：`wp_ability_invoked` → `wp_pre_execute_ability` → `normalize_input()` → `wp_ability_normalize_input` → `validate_input()` → `wp_ability_validate_input` → `check_permissions()` → `wp_ability_permission_result` → `wp_before_execute_ability` → 回调 → `wp_ability_execute_result` → `validate_output()` → `wp_ability_validate_output` → `wp_after_execute_ability`
+- `wp_pre_execute_ability` 的短路判定靠一个**哨兵对象**（`WP_Filter_Sentinel`）：只有返回值与哨兵**不同**才算短路，因此要继续正常执行必须**原样返回收到的 `$pre`**（不能返回 `null`/`false`——那会被当成短路并原样返回给调用方）
+- `wp_ability_permission_result` 的返回值有**安全默认**：只有 `bool` 或 `WP_Error` 会被接受，**其他任何返回值都被强制转为 `false`**（即拒绝）。想放行必须显式返回 `true`
+- 这 6 个过滤器对**全站每个 ability 都会触发**（`wp_ability_validate_input` / `wp_ability_validate_output` 例外，只在该 ability 定义了相应 schema 时触发），回调里务必先按 `$ability_name` 判断目标
 - 另有 `wp_ability_invoked` action 在最开头触发（原始输入，适合做审计日志）；但它拿到的是**未归一化的原始输入**，可能含凭证或隐私数据，不要无差别记录
-- `wp_get_abilities()` 在 7.1 起支持按 `category` / `namespace` / `meta` 过滤，并新增 `wp_get_abilities_item_include`、`wp_get_abilities_result` 两个过滤器
+- `wp_get_abilities()` 在 7.1 起支持按 `category` / `namespace` / `meta` 过滤，并新增 `wp_get_abilities_item_include`、`wp_get_abilities_result` 两个过滤器（7.2 起还可用等价的 `item_include_callback` / `result_callback` **参数**，以及 `has_required_capabilities` 布尔参数用来排除无权限要求的能力）
 
 ### 三类注册错误的排查顺序
 

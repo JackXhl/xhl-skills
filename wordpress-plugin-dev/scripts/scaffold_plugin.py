@@ -383,9 +383,13 @@ class AiFeatures {{
             // public 只表示"可被发现"，不代表"可执行"；执行仍走 permission_callback。
             'meta'                => array(
                 'annotations' => array(
-                    'readonly'    => true,
+                    // 注意：readonly=true 会让官方 REST 控制器强制要求 GET 方法，
+                    // 而 GET 的 input 走 URL 查询参数——长正文会被服务器截断。
+                    // 摘要生成既非只读语义也非幂等，故这里不标 readonly，
+                    // 让官方回落到 POST（input 放 JSON body）。
+                    'readonly'    => false,
                     'destructive' => false,
-                    'idempotent'  => true,
+                    'idempotent'  => false,
                 ),
                 'public'      => false,
             ),
@@ -490,6 +494,14 @@ TODO: 详细说明。
 
 = 1.0.0 =
 * 首次发布
+
+<!--
+说明：
+- `Requires at least` / `Requires PHP` 以**插件主 PHP 文件的头部**为准
+  （自 WP 5.8 起 readme.txt 里的这两个字段不再被核心解析，仅作人工参考）。
+- `Tested up to` 只填主版本号（如 7.1，不要写 7.1.3）。
+- `Stable tag` 填插件自身的版本号，不是 WP 版本号。
+-->
 """
 
 

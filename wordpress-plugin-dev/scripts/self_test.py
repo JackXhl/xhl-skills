@@ -816,6 +816,114 @@ def main() -> int:
                           "文档载明 register_post_type 的保留名清单"):
                 check(label, False, "参考文档缺失")
 
+        # ---- 测试 1n: 第 10 轮事实核对守卫（对照 WP 核心源码 + PHP AI Client SDK）----
+        #
+        # 背景：第 10 轮审查改为直接下载并逐行比对 WP 核心源码文件
+        # （wp-includes/ai-client/、abilities-api/、
+        #  rest-api/endpoints/class-wp-rest-abilities-v1-*.php、connectors.php）
+        # 与 WordPress/php-ai-client SDK，发现 4 处硬错误与 7 处关键遗漏，
+        # 其中「7.1 新增 4 个生命周期过滤器」的错误已扩散到 SKILL.md 与
+        # README.md。这类错误不会让任何测试失败，必须显式钉死。
+        ai_ref = (SCRIPTS.parent / "references" / "ai-client-connectors-abilities.md")
+        skill_md = (SCRIPTS.parent / "SKILL.md")
+        readme_md = (SCRIPTS.parent / "README.md")
+
+        if all(p.is_file() for p in (ai_ref, skill_md, readme_md)):
+            ai_text = ai_ref.read_text(encoding="utf-8")
+            skill_text = skill_md.read_text(encoding="utf-8")
+            readme_text = readme_md.read_text(encoding="utf-8")
+            scaffold_text = (SCRIPTS / "scaffold_plugin.py").read_text(encoding="utf-8")
+
+            # 1) REST run 端点用 DELETE 的判定是 destructive && idempotent 双条件。
+            #    官方 WP_REST_Abilities_V1_Run_Controller::validate_request_method()：
+            #      if readonly -> GET
+            #      elseif destructive && idempotent -> DELETE
+            #      else -> POST
+            #    只写 destructive: true 会落回 POST，与直觉相反。
+            check("文档载明 DELETE 需 destructive 与 idempotent 同时为 true",
+                  "idempotent" in ai_text and "同时" in ai_text
+                  and "destructive" in ai_text, "")
+            check("文档未把 destructive 单独描述为即等于 DELETE",
+                  "destructive: true` | **DELETE" not in ai_text,
+                  "官方要求 destructive && idempotent 双条件")
+
+            # 2) WP 7.1 新增的执行生命周期过滤器是 6 个，不是 4 个。
+            #    官方 WP_Ability 中 7.1 标注的过滤器：
+            #      wp_pre_execute_ability / wp_ability_normalize_input /
+            #      wp_ability_validate_input / wp_ability_permission_result /
+            #      wp_ability_execute_result / wp_ability_validate_output
+            for fname in ("wp_pre_execute_ability", "wp_ability_normalize_input",
+                          "wp_ability_validate_input", "wp_ability_permission_result",
+                          "wp_ability_execute_result", "wp_ability_validate_output"):
+                check(f"文档载明 7.1 过滤器 {fname}",
+                      fname in ai_text, "官方 WP_Ability 源码 @since 7.1.0")
+            check("文档不再声称 7.1 只有 4 个生命周期过滤器",
+                  "4 个执行生命周期过滤器" not in ai_text
+                  and "4 个生命周期过滤器" not in ai_text, "")
+            check("SKILL.md 已把生命周期过滤器数量更正为 6 个",
+                  "6 个执行生命周期过滤器" in skill_text
+                  and "4 个执行生命周期过滤器" not in skill_text, "")
+            check("README.md 已把生命周期过滤器数量更正为 6 个",
+                  "6 个" in readme_text and "4 个执行生命周期过滤器" not in readme_text, "")
+
+            # 3) wp_pre_execute_ability 的短路靠哨兵对象：
+            #    只有返回值 !== WP_Filter_Sentinel 才算短路。
+            check("文档载明 wp_pre_execute_ability 的哨兵短路语义",
+                  "哨兵" in ai_text and "wp_pre_execute_ability" in ai_text, "")
+
+            # 4) wp_ability_permission_result 非 bool 非 WP_Error 会被强制转 false
+            check("文档载明 permission_result 的非 bool 强制转 false 语义",
+                  "强制转为 `false`" in ai_text or "强制转为 false" in ai_text, "")
+
+            # 5) 7.2 起 category 可选（默认 uncategorized）、
+            #    permission_callback 可由 required_capabilities 替代
+            check("文档载明 7.2 起 category 可选并默认 uncategorized",
+                  "uncategorized" in ai_text and "7.2" in ai_text, "")
+            check("文档载明 required_capabilities 可替代 permission_callback",
+                  "required_capabilities" in ai_text, "")
+
+            # 6) wp_ai_client_embedding() 自 7.2.0 起提供
+            check("文档载明 wp_ai_client_embedding 为 7.2 新增",
+                  "wp_ai_client_embedding" in ai_text and "7.2" in ai_text, "")
+
+            # 7) REST 层错误码：rest_ability_invalid_method(405)、rest_ability_not_found(404)
+            check("文档载明 REST 层 405 错误码 rest_ability_invalid_method",
+                  "rest_ability_invalid_method" in ai_text and "405" in ai_text, "")
+
+            # 8) wp_get_abilities() 的 7.2 新参数 has_required_capabilities
+            check("文档载明 wp_get_abilities 的 has_required_capabilities 参数",
+                  "has_required_capabilities" in ai_text, "")
+
+            # 9) 脚手架的 ability 桩不得设 readonly: true
+            #    ——readonly 会让官方 REST 控制器强制 GET，长正文走 URL 会被截断。
+            check("脚手架 ability 桩未把 readonly 设为 true",
+                  "'readonly'    => true" not in scaffold_text
+                  and "'readonly'    => false" in scaffold_text, "")
+            check("脚手架 ability 桩标注了 readonly 与 GET 方法的关系",
+                  "GET" in scaffold_text and "readonly" in scaffold_text, "")
+        else:
+            for label in ("文档载明 DELETE 需 destructive 与 idempotent 同时为 true",
+                          "文档未把 destructive 单独描述为即等于 DELETE",
+                          "文档载明 7.1 过滤器 wp_pre_execute_ability",
+                          "文档载明 7.1 过滤器 wp_ability_normalize_input",
+                          "文档载明 7.1 过滤器 wp_ability_validate_input",
+                          "文档载明 7.1 过滤器 wp_ability_permission_result",
+                          "文档载明 7.1 过滤器 wp_ability_execute_result",
+                          "文档载明 7.1 过滤器 wp_ability_validate_output",
+                          "文档不再声称 7.1 只有 4 个生命周期过滤器",
+                          "SKILL.md 已把生命周期过滤器数量更正为 6 个",
+                          "README.md 已把生命周期过滤器数量更正为 6 个",
+                          "文档载明 wp_pre_execute_ability 的哨兵短路语义",
+                          "文档载明 permission_result 的非 bool 强制转 false 语义",
+                          "文档载明 7.2 起 category 可选并默认 uncategorized",
+                          "文档载明 required_capabilities 可替代 permission_callback",
+                          "文档载明 wp_ai_client_embedding 为 7.2 新增",
+                          "文档载明 REST 层 405 错误码 rest_ability_invalid_method",
+                          "文档载明 wp_get_abilities 的 has_required_capabilities 参数",
+                          "脚手架 ability 桩未把 readonly 设为 true",
+                          "脚手架 ability 桩标注了 readonly 与 GET 方法的关系"):
+                check(label, False, "参考文档或脚本缺失")
+
         # ---- 测试 2: 扫描器对干净产出 ----
         summary, _ = scan_json(plugin_dir)
         check("干净产出 HIGH=0 且 MEDIUM=0",

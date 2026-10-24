@@ -22,7 +22,7 @@ agent_created: true
 - WP 7.0 起的核心新基础设施：
   - **AI Client**（`wp_ai_client_prompt()`，7.0）
   - **Connectors API**（Settings > Connectors 统一管理 API Key，7.0）
-  - **Abilities API**（`wp_register_ability()`，**服务端 6.9 引入**，7.0 增加 JS 客户端，**7.1 增加统一 `meta.public` 暴露标志 + 4 个执行生命周期过滤器**）
+  - **Abilities API**（`wp_register_ability()`，**服务端 6.9 引入**，7.0 增加 JS 客户端，**7.1 增加统一 `meta.public` 暴露标志 + 6 个执行生命周期过滤器**；7.2 起 `category` 可选、`required_capabilities` 可替代 `permission_callback`）
   - **MCP Adapter**（把 Ability 暴露为 MCP 工具）——**独立包，不是核心的一部分**
 - 7.2 预告（可能影响插件）：`wp_kses()` 基于 HTML API 重建、Application Passwords 改进、Secrets API（CLI-only，试验性）
 - 写任何版本相关代码前，先 WebSearch 核实当时的最新版本与弃用情况；官方文档以 developer.wordpress.org 为准
@@ -68,7 +68,7 @@ agent_created: true
 4. 运行 `scripts/check_wp_versions.py` 确认版本基线未过期
 5. 功能验证优先用 wp-env / Playground；纯静态环境至少通读 diff 自查转义与权限
 6. 发布类任务额外跑 `release-and-quality.md` 的清单
-7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（61 项断言，含杀软环境韧性）
+7. 改动了技能自身脚本时，运行 `scripts/self_test.py` 做回归（81 项断言，含杀软环境韧性）
 
 ## 强制规则（不可协商）
 
@@ -104,14 +104,14 @@ agent_created: true
 - `wp_security_scan.py` — 静态安全扫描：危险函数、混淆特征、未净化超全局、**污点传播**（超全局 → 变量 → `$wpdb->`/include/call_user_func/unserialize/文件写入）、SQL 拼接（含 `prepare()` 格式串插值）、缺失 nonce/capability、`wp_ajax_nopriv_`、`__return_true` 权限回调、REST 缺 `permission_callback`、短代码未转义、隐藏文件、外联域名清单，输出分级报告（`base64_decode`/`file_put_contents`/`move_uploaded_file` 等常见合法用法仅作提示级报告，不判 HIGH）
 - `check_php_syntax.py` — PHP CLI 探测 + `php -l`。探测顺序：`PHP_BIN` 环境变量 → PATH → 常见安装位置（XAMPP/WAMP/Laragon/scoop/解压版，含未加入 PATH 的情况）——**只查 PATH 会让"已装 PHP"的机器静默跳过语法检查**；设 `WP_DEV_NO_PHP_SEARCH=1` 可关闭兜底扫描
 - `check_wp_versions.py` — 版本保鲜检查（比对 api.wordpress.org 与本 skill 基线）
-- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、ability 与连接器注册语义、**文档事实准确性核对**（连接器 ID / 零参数签名 / WP 7.1 过滤器 / REST 端点 / MCP 非核心 / **第 9 轮：菜单函数 capability 参数位置、dbDelta 空格误解、permission_callback 5.5 起、register_setting 无 permission_callback、register_meta 用 auth_callback、wp_localize_script 强转字符串、wp_unslash 语义、Requires 头部版本归属、apiVersion 3、Interactivity data-wp-interactive、Plugin Check (PCP)、资产文件名规范**）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 替换字符检查）**、**PHP CLI 探测（PHP_BIN/PATH/常见位置三级 + 无 PHP 降级）**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
+- `self_test.py` — 技能自测（eval-lite）：脚手架产出 php -l 校验、边界输入、中文名 slug 冲突、子模块引导方式、**运行时钩子真实触发**、ability 与连接器注册语义、**文档事实准确性核对**（连接器 ID / 零参数签名 / WP 7.1 过滤器 / REST 端点 / MCP 非核心 / **第 9 轮：菜单函数 capability 参数位置、dbDelta 空格误解、permission_callback 5.5 起、register_setting 无 permission_callback、register_meta 用 auth_callback、wp_localize_script 强转字符串、wp_unslash 语义、Requires 头部版本归属、apiVersion 3、Interactivity data-wp-interactive、Plugin Check (PCP)、资产文件名规范** / **第 10 轮：DELETE 需 destructive+idempotent 双条件、7.1 生命周期过滤器实为 6 个、哨兵短路语义、permission_result 非 bool 转 false、7.2 起 category 可选与 required_capabilities、wp_ai_client_embedding 为 7.2 新增、REST 405 错误码、脚手架 readonly 不得为 true**）、**references 全量 PHP 代码块 php -l**、**全文件编码完整性（U+FFFD 替换字符检查）**、**PHP CLI 探测（PHP_BIN/PATH/常见位置三级 + 无 PHP 降级）**、扫描器污点传播与误报控制、脚本退出码与降级路径回归；CI 可直接运行
 - `wp_stub.php` — 最小 WordPress 运行时存根：加载插件主文件并**真正执行** `plugins_loaded`/`init`/`rest_api_init`/`admin_*`/`wp_abilities_api_*`/`wp_connectors_init` 钩子（**带参动作钩子会正确传入回调参数**，如 `wp_connectors_init` 传注册表实例），验证 PSR-4 autoloader 定位、子命名空间解析、常量定义时机、钩子注册与回调执行；并能诊断三类致命模式——"在 `plugins_loaded` 回调内重复 `add_action('plugins_loaded')`"导致子模块永不执行、ability 分类未注册/挂错钩子、连接器重复注册（`php -l` 只管语法，这个管运行时）
 
 ### references/
 - `plugin-fundamentals.md` — 头部字段全集、目录规范、加载顺序、激活/停用/卸载、autoload、版本号陷阱
 - `hooks-and-core-apis.md` — Hooks API 与常用核心 API（Options/Settings/HTTP/Metadata/CPT/Taxonomy/Cron/短代码/菜单/Ajax/i18n）
 - `security-checklist.md` — 安全审查清单、净化/转义函数表、漏洞模式速查
-- `ai-client-connectors-abilities.md` — WP 7.x AI 三件套：AI Client 流式 API（snake_case builder + camelCase 结果对象）、Connectors 注册与消费（**内置 ID 为 `anthropic`/`google`/`openai`，无前缀**）、Abilities 注册与暴露（REST 端点、annotations 决定 HTTP 方法、WP 7.1 生命周期过滤器）、MCP Adapter（**独立包，非核心**）
+- `ai-client-connectors-abilities.md` — WP 7.x AI 三件套：AI Client 流式 API（snake_case builder + camelCase 结果对象）、Connectors 注册与消费（**内置 ID 为 `anthropic`/`google`/`openai`，无前缀**）、Abilities 注册与暴露（REST 端点、**annotations 的 `destructive`+`idempotent` 组合决定 DELETE**、WP 7.1 的 **6 个**生命周期过滤器）、MCP Adapter（**独立包，非核心**）
 - `gutenberg-and-frontend.md` — block.json、@wordpress/scripts、资源入队、弃用处理、Interactivity API 入门
 - `release-and-quality.md` — WPCS、Plugin Check、PHPStan、测试（wp-env/PHPUnit）、wordpress.org 提交清单
 

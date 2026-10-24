@@ -20,6 +20,22 @@ import shutil
 import subprocess
 import sys
 
+
+def ensure_utf8_stdout() -> None:
+    """将标准输出/错误切换到 UTF-8。
+
+    Windows 非中文 locale（如 GitHub Actions 的 en-US runner，管道编码为
+    cp1252）下，中文输出会触发 UnicodeEncodeError 直接崩溃；errors=replace
+    保证极端字符也不抛异常。Unix 环境本就是 UTF-8，调用无副作用。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
 CANDIDATES = ["php", "php8", "php8.3", "php8.2", "php8.1", "php.exe"]
 
 
@@ -32,6 +48,7 @@ def find_php() -> str | None:
 
 
 def main() -> int:
+    ensure_utf8_stdout()
     ap = argparse.ArgumentParser(description="PHP 语法检查")
     ap.add_argument("root", help="插件目录")
     args = ap.parse_args()

@@ -22,6 +22,22 @@ import os
 import re
 import sys
 
+
+def ensure_utf8_stdout() -> None:
+    """将标准输出/错误切换到 UTF-8。
+
+    Windows 非中文 locale（如 GitHub Actions 的 en-US runner，管道编码为
+    cp1252）下，中文输出会触发 UnicodeEncodeError 直接崩溃；errors=replace
+    保证极端字符也不抛异常。Unix 环境本就是 UTF-8，调用无副作用。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
 # (severity, 类别, 正则, 说明)
 PATTERNS: list[tuple[str, str, str, str]] = [
     # ---- 代码/命令执行 ----
@@ -166,6 +182,7 @@ def scan(root: str) -> list[dict]:
 
 
 def main() -> int:
+    ensure_utf8_stdout()
     ap = argparse.ArgumentParser(description="WordPress 插件静态安全扫描")
     ap.add_argument("root", help="插件目录")
     ap.add_argument("--json", action="store_true", help="JSON 输出")

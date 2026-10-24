@@ -17,6 +17,22 @@ import sys
 import urllib.request
 import urllib.error
 
+
+def ensure_utf8_stdout() -> None:
+    """将标准输出/错误切换到 UTF-8。
+
+    Windows 非中文 locale（如 GitHub Actions 的 en-US runner，管道编码为
+    cp1252）下，中文输出会触发 UnicodeEncodeError 直接崩溃；errors=replace
+    保证极端字符也不抛异常。Unix 环境本就是 UTF-8，调用无副作用。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
 API = "https://api.wordpress.org/core/version-check/1.7/?version=7.1"
 SKILL_BASELINE = {"offer": "7.1.3", "next_major": "7.2", "as_of": "2026-10-24"}
 
@@ -30,6 +46,7 @@ def fetch(url: str, timeout: int = 10) -> dict | None:
 
 
 def main() -> int:
+    ensure_utf8_stdout()
     data = fetch(API)
     if not data or "offers" not in data:
         print("无法连接 api.wordpress.org（离线或超时），跳过版本保鲜检查。")

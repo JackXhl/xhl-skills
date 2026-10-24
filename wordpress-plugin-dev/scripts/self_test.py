@@ -100,6 +100,22 @@ RESULTS: list[tuple[str, bool, str]] = []
 SKIPS: list[str] = []
 
 
+def ensure_utf8_stdout() -> None:
+    """将标准输出/错误切换到 UTF-8。
+
+    Windows 非中文 locale（如 GitHub Actions 的 en-US runner，管道编码为
+    cp1252）下，中文输出会触发 UnicodeEncodeError 直接崩溃；errors=replace
+    保证极端字符也不抛异常。Unix 环境本就是 UTF-8，调用无副作用。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     RESULTS.append((name, ok, detail))
     mark = "PASS" if ok else "FAIL"
@@ -112,7 +128,9 @@ def skip(name: str, reason: str = "") -> None:
 
 
 def run(script: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+    # encoding=utf-8: 子进程输出含中文，不能用 locale 编码（en-US Windows 为 cp1252）
+    return subprocess.run([sys.executable, str(script), *args], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
 
 
 def find_php() -> str | None:
@@ -134,6 +152,7 @@ def build_evil(dirpath: Path) -> None:
 
 
 def main() -> int:
+    ensure_utf8_stdout()
     php = find_php()
 
     with tempfile.TemporaryDirectory(prefix="wp-skill-selftest-") as tmpdir:
@@ -153,7 +172,8 @@ def main() -> int:
 
         if php:
             bad = [f.name for f in php_files
-                   if subprocess.run([php, "-l", str(f)], capture_output=True, text=True).returncode != 0]
+                   if subprocess.run([php, "-l", str(f)], capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace").returncode != 0]
             check("脚手架产出 php -l 全部通过", not bad,
                   f"语法失败: {bad}" if bad else f"{len(php_files)} 个文件全部通过")
         else:
@@ -232,7 +252,8 @@ def main() -> int:
         env_nophp = dict(os.environ)
         env_nophp["PATH"] = str(tmp / "no-such-bin-dir")
         proc = subprocess.run([sys.executable, str(SYNTAX_CHECK), str(plugin_dir)],
-                              capture_output=True, text=True, env=env_nophp)
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env_nophp)
         check("无 PHP 时语法检查优雅跳过",
               proc.returncode == 0 and "跳过" in proc.stdout,
               proc.stdout.strip().splitlines()[0][:60] if proc.stdout.strip() else "无输出")
@@ -242,7 +263,8 @@ def main() -> int:
             env_php = dict(os.environ)
             env_php["PATH"] = str(Path(php).parent) + os.pathsep + env_php.get("PATH", "")
             proc = subprocess.run([sys.executable, str(SYNTAX_CHECK), str(plugin_dir)],
-                                  capture_output=True, text=True, env=env_php)
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", env=env_php)
             check("有 PHP 时语法检查正常执行",
                   proc.returncode == 0 and "语法错误 0 个" in proc.stdout,
                   proc.stdout.strip().splitlines()[-1][:60] if proc.stdout.strip() else "无输出")

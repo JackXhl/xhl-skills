@@ -30,6 +30,7 @@
 - `Requires Plugins`：WP 6.5+ 支持，逗号分隔的 wordpress.org slug（不带路径）
 - `Network: true`：仅多站点网络激活时使用
 - **版本号陷阱**：WP 用 PHP `version_compare()` 比较版本，`1.02 > 1.1`。发新版前确认 `version_compare('new','old','>')` 为真
+- **头部值卫生**：从别处复制来的插件名/描述可能带入 `*/`（提前闭合注释、甚至注入代码）、换行（截断 header 字段）、单引号（若该值进入 PHP 字符串字面量会语法错误）；以数字开头的名字做 namespace/常量前缀时须加前缀（`2026 Tools` → `Plugin2026Tools` / `PLUGIN_2026_TOOLS_*`）
 
 ## 2. 目录结构（推荐）
 

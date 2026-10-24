@@ -80,7 +80,7 @@ add_action( 'wp_abilities_api_init', function (): void {
 
 ## 5. 实战模式：AI Provider 连接器插件（国内五家）
 
-以官方认可的 ai-provider-for-china（知更鸟）为范本，结构为：
+以 ai-provider-for-china（知更鸟 / zmingcx.com）为范本，结构为：
 
 1. 每个 provider 一个类继承 `WordPress\AiClient\Providers\ApiBasedImplementation\AbstractApiProvider`：实现 `baseUrl()`、`createModel()`、`createProviderMetadata()`、`createProviderAvailability()`、`createModelMetadataDirectory()`
 2. 模型类继承 `AbstractOpenAiCompatibleTextGenerationModel`，覆写 `createRequest()` 指向自家端点；国内厂商普遍不支持 `json_schema` response_format，统一 trait 移除该参数

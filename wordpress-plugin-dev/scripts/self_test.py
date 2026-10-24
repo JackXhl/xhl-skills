@@ -3,6 +3,8 @@
 
 用内置夹具对技能的全部脚本做回归验证，任何环境可重复执行：
   1. 脚手架全选项生成 -> 文件齐全 -> php -l 语法全过（需 PHP，无则跳过）
+  1b. 无选项基础生成 -> {hooks} 占位符不残留
+  1c. 特殊字符插件名（数字开头/单引号/*/ 注入）-> 生成且语法合法
   2. 扫描器对干净产出 -> HIGH=0
   3. 扫描器对恶意夹具 -> exit=1、HIGH>=8、威胁类别全覆盖
      （rce/obfuscation/file/hijack/binary/hidden/abspath/ajax-nonce/rest/input）
@@ -178,6 +180,51 @@ def main() -> int:
                   f"语法失败: {bad}" if bad else f"{len(php_files)} 个文件全部通过")
         else:
             skip("脚手架产出 php -l 全部通过", "未检测到 PHP CLI（安装 PHP 8.1+ 后启用）")
+
+        # ---- 测试 1b: 无选项基础生成（{hooks} 占位符不得残留）----
+        basic = tmp / "basic"
+        proc = run(SCAFFOLD, "--name", "Plain Basic Plugin", "--path", str(basic))
+        basic_dir = basic / "plain-basic-plugin"
+        check("无选项基础生成成功",
+              proc.returncode == 0 and (basic_dir / "plain-basic-plugin.php").is_file(),
+              proc.stderr.strip()[-100:] if proc.returncode else "")
+        plugin_class = basic_dir / "src" / "Plugin.php"
+        if plugin_class.is_file():
+            check("无选项生成无 {hooks} 占位符残留",
+                  "{hooks}" not in plugin_class.read_text(encoding="utf-8"))
+        else:
+            check("无选项生成无 {hooks} 占位符残留", False, "Plugin.php 未生成")
+
+        # ---- 测试 1c: 特殊字符插件名（边界输入）----
+        # 覆盖实战发现的三类致命场景：数字开头（namespace/常量非法）、
+        # 单引号（断裂 PHP 字符串字面量）、*/（提前闭合头部注释注入代码）。
+        edge = tmp / "edge"
+        edge_names = [
+            ("2026 Tools", "2026-tools"),
+            ("Bob's Plugin", "bob-s-plugin"),
+            ("Evil */ system('x'); /*", "evil-system-x"),
+        ]
+        gen_ok, lint_bad = True, []
+        for name, slug in edge_names:
+            proc = run(SCAFFOLD, "--name", name, "--path", str(edge), "--with-settings")
+            d = edge / slug
+            if proc.returncode != 0 or not (d / f"{slug}.php").is_file():
+                gen_ok = False
+                lint_bad.append(f"{slug}: 生成失败")
+                continue
+            if php:
+                for f in sorted(d.rglob("*.php")):
+                    r = subprocess.run([php, "-l", str(f)], capture_output=True, text=True,
+                                       encoding="utf-8", errors="replace")
+                    if r.returncode != 0:
+                        lint_bad.append(f"{slug}/{f.name}: {r.stderr.strip()[:60]}")
+        check("特殊字符插件名生成成功", gen_ok and not lint_bad[:1],
+              "; ".join(lint_bad[:2]) if lint_bad else "3 组边界输入全部生成成功")
+        if php:
+            check("特殊字符插件名 php -l 全部通过", not lint_bad,
+                  "; ".join(lint_bad[:2]) if lint_bad else "3 组边界输入语法全部合法")
+        else:
+            skip("特殊字符插件名 php -l 全部通过", "未检测到 PHP CLI")
 
         # ---- 测试 2: 扫描器对干净产出 ----
         proc = run(SCANNER, str(plugin_dir), "--json")

@@ -141,7 +141,7 @@ class Activator {{
     public static function activate(): void {{
         if ( version_compare( get_bloginfo( 'version' ), '7.0', '<' ) ) {{
             deactivate_plugins( plugin_basename( {const_prefix}_FILE ) );
-            wp_die( esc_html__( '{name} 需要 WordPress 7.0 或更高版本。', '{slug}' ), '插件激活失败', array( 'back_link' => true ) );
+            wp_die( esc_html__( '{name_lit} 需要 WordPress 7.0 或更高版本。', '{slug}' ), '插件激活失败', array( 'back_link' => true ) );
         }}
         add_option( '{slug}_version', {const_prefix}_VERSION );
         flush_rewrite_rules();
@@ -215,7 +215,7 @@ class SettingsPage {{
     }}
 
     public static function add_menu(): void {{
-        add_options_page( __( '{name}', '{slug}' ), __( '{name}', '{slug}' ), 'manage_options', '{slug}', array( self::class, 'render' ) );
+        add_options_page( __( '{name_lit}', '{slug}' ), __( '{name_lit}', '{slug}' ), 'manage_options', '{slug}', array( self::class, 'render' ) );
     }}
 
     public static function register(): void {{
@@ -433,11 +433,47 @@ def slugify(text: str) -> str:
 
 
 def to_namespace(slug: str) -> str:
-    return "".join(p.capitalize() for p in slug.split("-"))
+    """从 slug 生成 PHP 命名空间。
+
+    PHP 命名空间每一段都不能以数字开头（namespace 2026Tools 是语法错误），
+    因此以数字开头的段加 "Plugin" 前缀（如 "2026-tools" -> Plugin2026Tools）。
+    """
+    parts = [p.capitalize() for p in slug.split("-") if p]
+    parts = [("Plugin" + p) if p[0].isdigit() else p for p in parts]
+    return "".join(parts) or "MyPlugin"
 
 
 def to_const_prefix(slug: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "_", slug.upper())
+    """从 slug 生成 PHP 常量前缀。
+
+    PHP 标识符不能以数字开头（2026_TOOLS_VERSION 是语法错误），
+    因此数字开头时加 PLUGIN_ 前缀。
+    """
+    cp = re.sub(r"[^A-Z0-9]", "_", slug.upper())
+    if cp and cp[0].isdigit():
+        cp = "PLUGIN_" + cp
+    return cp
+
+
+def sanitize_header_value(text: str) -> str:
+    """消毒将写入 PHP 文件头注释 / readme.txt 的自由文本。
+
+    去除块注释闭合序列 "*/"（否则可提前闭合注释、注入 PHP 代码）、
+    换行（否则会截断 WordPress 插件头部字段）及其余控制字符。
+    """
+    text = text.replace("*/", "")
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    return text.strip()
+
+
+def to_php_single_quoted(text: str) -> str:
+    """将自由文本转为可安全嵌入 PHP 单引号字符串字面量的形式。
+
+    先做头部消毒，再转义反斜杠与单引号（'Bob's Plugin' 不转义会是语法错误）。
+    """
+    text = sanitize_header_value(text)
+    return text.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def write(path: str, content: str) -> None:
@@ -469,9 +505,13 @@ def main() -> int:
         print(f"错误: 目标已存在 {base}", file=sys.stderr)
         return 2
 
-    ctx = dict(name=args.name, slug=slug, namespace=ns, const_prefix=cp,
-               author=args.author, author_uri=args.author_uri,
-               description=args.description, plugin_uri=plugin_uri,
+    ctx = dict(name=sanitize_header_value(args.name),
+               name_lit=to_php_single_quoted(args.name),
+               slug=slug, namespace=ns, const_prefix=cp,
+               author=sanitize_header_value(args.author),
+               author_uri=sanitize_header_value(args.author_uri),
+               description=sanitize_header_value(args.description),
+               plugin_uri=plugin_uri,
                author_slug=slugify(args.author))
 
     write(os.path.join(base, f"{slug}.php"), HEADER.format(**ctx))
@@ -498,13 +538,13 @@ def main() -> int:
         write(os.path.join(base, "blocks", "example-block", "block.json"), BLOCK_JSON.format(**ctx))
         hooks.append("        add_action( 'init', array( Blocks\\ExampleBlock::class, 'init' ) );")
 
-    if hooks:
-        # 将可选功能的 hooks 注入 Plugin::init()
-        plugin_class_path = os.path.join(base, "src", "Plugin.php")
-        with open(plugin_class_path, "r", encoding="utf-8") as fh:
-            pc = fh.read()
-        pc = pc.replace("{hooks}", "\n".join(hooks))
-        write(plugin_class_path, pc)
+    # 将可选功能的 hooks 注入 Plugin::init()（无选项时替换为空串，
+    # 确保 {hooks} 占位符不会残留——残留即是 PHP 语法错误）
+    plugin_class_path = os.path.join(base, "src", "Plugin.php")
+    with open(plugin_class_path, "r", encoding="utf-8") as fh:
+        pc = fh.read()
+    pc = pc.replace("{hooks}", "\n".join(hooks))
+    write(plugin_class_path, pc)
 
     print(f"已生成插件骨架: {os.path.abspath(base)}")
     print(f"  slug={slug}  namespace={ns}  常量前缀={cp}_*")

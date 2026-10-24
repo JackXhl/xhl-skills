@@ -28,7 +28,7 @@
 | 数据类型 | 函数 |
 |---|---|
 | 单行文本 | `sanitize_text_field` |
-| 多行文本（保留换行） | `sanit_textarea_field` |
+| 多行文本（保留换行） | `sanitize_textarea_field` |
 | 邮箱 | `sanitize_email` |
 | URL（入库） | `esc_url_raw` |
 | 选项键/标识 | `sanitize_key` |

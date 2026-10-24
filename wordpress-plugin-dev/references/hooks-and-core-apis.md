@@ -24,7 +24,7 @@ do_action( 'my_plugin_event', $arg );              // 暴露自己的扩展点
 | 文章附加数据 | Metadata API：`get_post_meta` / `update_post_meta` / `register_meta`（带 `sanitize_callback`、`show_in_rest`） |
 | 自定义文章类型 | `register_post_type`（激活时 `flush_rewrite_rules`，参数遵循 `register_post_type` 文档的保留名规则） |
 | 分类法 | `register_taxonomy` |
-| 定时任务 | WP-Cron：`wp_schedule_event` / `wp_next_scheduled` / `wp_clear_scheduled_hook`；低频用 `schedule_single_event`；高并发站提醒用户改系统 cron |
+| 定时任务 | WP-Cron：`wp_schedule_event` / `wp_next_scheduled` / `wp_clear_scheduled_hook`；低频用 `wp_schedule_single_event`；高并发站提醒用户改系统 cron |
 | 短代码 | `add_shortcode`；回调 **return 字符串**不 echo；属性用 `shortcode_atts` 合并默认值 |
 | 后台菜单 | `add_menu_page` / `add_submenu_page` / `add_options_page`，第三个参数是 capability（如 `manage_options`） |
 | Ajax | `wp_ajax_{action}`（登录用户）+ `wp_ajax_nopriv_{action}`（未登录，慎用）；必须 `check_ajax_referer` + `current_user_can`，`wp_send_json_success/error` 收尾 |

@@ -1,7 +1,7 @@
 ---
 name: zhongcao-smzdm
 version: 1.0.0
-description: Use when writing 什么值得买、知乎、CSDN 可放链接的种草长文、安利体、产品营销测评，或用户要求模仿 SMZDM、post.smzdm.com、社区安利结构。Also use when a draft is 太像介绍、没有人味、功能清单腔, or screenshot numbers do not match the text. Do not use for 小红书图文卡片 or 口播视频脚本.
+description: Use when writing 什么值得买、知乎、CSDN 可放链接的种草长文、安利体、产品营销测评，或用户要求模仿 SMZDM、post.smzdm.com、社区安利结构。Also use when a draft is 太像介绍、没有人味、功能清单腔, or screenshot numbers do not match the text. Do not use for 小红书图文卡片, 口播视频脚本, or 云服务器/免费试用/学生机/开服推荐 (use server-promo).
 author: xhl-skills
 license: MIT
 tags: ["writing", "zhongcao", "smzdm", "ugc", "marketing", "review"]
@@ -45,6 +45,7 @@ tags: ["writing", "zhongcao", "smzdm", "ugc", "marketing", "review"]
 - 口播、介绍视频、字幕稿
 - 纯说明书、帮助中心、更新日志
 - 用户明确只要短评 / 朋友圈 / 海报文案
+- 云服务器、免费试用、学生机、开服推荐。改用 `server-promo`，一家一段加实页截图，不要 8 节骨架
 
 ## 0. 写前对材料（硬停止）
 

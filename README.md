@@ -11,6 +11,7 @@ xhl的agent skill技能包
 | [wordpress-plugin-dev](./wordpress-plugin-dev/) | WordPress 插件开发、审查、加固与发布：脚手架、安全扫描、AI Client / Connectors / Abilities 集成、wordpress.org 过审 |
 | [zhongcao-smzdm](./zhongcao-smzdm/) | 什么值得买式种草长文：标题槽位、8 节安利骨架、词汇/表达/预期/情感/结构五项检验。与具体产品解耦，换产品只换事实卡和截图 |
 | [server-promo](./server-promo/) | 云服务器推广图文：厂商分段、实页截图、中文入口。试用、学生机、开服推荐用这个，不用 8 节种草骨架 |
+| [wechat-search-card](./wechat-search-card/) | 微信搜一搜卡片：小程序码原图 + 搜索词。词或码不确定先问，确认后一条命令出图 |
 
 ## 安装
 
@@ -19,6 +20,7 @@ xhl的agent skill技能包
 npx skills add JackXhl/xhl-skills --skill zhongcao-smzdm
 npx skills add JackXhl/xhl-skills --skill server-promo
 npx skills add JackXhl/xhl-skills --skill wordpress-plugin-dev
+npx skills add JackXhl/xhl-skills --skill wechat-search-card
 
 # 安装全部技能
 npx skills add JackXhl/xhl-skills

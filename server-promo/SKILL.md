@@ -1,6 +1,6 @@
 ---
 name: server-promo
-version: 1.1.0
+version: 1.2.0
 description: >-
   Write illustrated Chinese promo articles for cloud servers, free trials,
   student coupons, and game-server hosts (腾讯云、阿里云、雨云、轻量、ECS、开服).
@@ -19,6 +19,19 @@ tags: ["writing", "server", "promo", "cloud", "screenshot"]
 不要套 `zhongcao-smzdm` 的 8 节骨架，也不要写成操作教程。
 
 成稿对照：[examples.md](examples.md)
+
+写完不算完成。下面每一步都要做完，才能把文章交给用户。审查过程不要交给用户，用户只要文章。
+
+```
+- [ ] 0 打开推广页，价格以当次商品卡为准
+- [ ] 1 桌面宽度截图，发白图作废
+- [ ] 2 按厂商写，一句事实一张图
+- [ ] 3 自己审查：重读全文，并打开每一张图对照
+- [ ] 4 python scripts/check_article.py 稿件.md 退出码 0
+- [ ] 5 check_prose.py 硬性项为 0
+```
+
+第 4 步或第 5 步失败，改对应的句子，再跑。没过不准交。
 
 ## 写之前
 
@@ -72,14 +85,6 @@ tags: ["writing", "server", "promo", "cloud", "screenshot"]
 
 中文冒号只出现在引号里的页面原文。不要破折号，不要「不是 A，而是 B」的翻案句。句子长短要错开。
 
-交稿前跑同仓库 `style-imitate-human-writer` 的检查脚本：
-
-```bash
-python ../style-imitate-human-writer/assets/check_prose.py 稿件.md
-```
-
-翻案句、黑话、硬停词必须是 0。句子长度过于接近只是提醒，改到长短错开即可。
-
 ## 图文
 
 一句事实，一张图，图在这句话下面。不要两张图中间没有字，也不要一段里堆完所有优惠再补图。
@@ -106,12 +111,27 @@ python ../style-imitate-human-writer/assets/check_prose.py 稿件.md
 - 学生 300 元券一年有效，不和新用户折扣叠加。
 - 雨云游戏云约 25 元/月起。新用户首月 5 折、三月 9 折、半年 8 折、年付 7 折。1 元可试，七天可退。人数档以当前下单页标注为准，用户给的对照表只作补充，和页面冲突时跟页面。
 
-## 交稿前
+## 3. 自己审查
+
+初稿写完，先自己重读，再打开每一张图。不要把清单贴给用户。
+
+逐句看三件事：
+
+1. 这句是优惠事实，还是在交代截图、按钮、当时页面开没开。后者删掉。秒杀只留每天几点一场。
+2. 这个价格、配置、游戏名，在这张图的这张商品卡上指得到。指不到就改文案，或换图。
+3. 标题是不是套了优惠帖句式。自己编的「还在找……」不能交。
+
+然后跑：
+
+```bash
+python scripts/check_article.py 稿件.md
+python ../style-imitate-human-writer/assets/check_prose.py 稿件.md
+```
+
+`check_article.py` 拦住制作过程用语，并核对文中图片文件在不在。`check_prose.py` 的翻案句、黑话、硬停词必须是 0。句子长度过于接近只是提醒，改到长短错开即可。
+
+两步都过，再看一遍：
 
 - [ ] 每家都是「适合谁 → 配置价格 → 边界 → 图 → 中文链接」
-- [ ] 每张图能指到正文里的数字或游戏名
 - [ ] 没有发白图、没有操作步骤、没有催领、没有文末链接堆
-- [ ] 没有「截图时 / 这张图 / 按钮是」
-- [ ] 每个价格都能在对应那张图的那张商品卡上指到
 - [ ] 推广链接与用户给的完全一致
-- [ ] `check_prose.py` 硬性项为 0

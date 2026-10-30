@@ -16,7 +16,7 @@
 1. 厂商分节：适合谁、配置价格、边界、截图、中文入口
 2. 开场只分人，结尾只说谁选谁，不催领、不堆链接
 3. 图文对得上：桌面宽度实页截图，发白图和画面里没有的名字不能写
-4. 口气走优惠帖，交稿前用 `style-imitate-human-writer` 的 `check_prose.py`
+4. 口气走优惠帖。写完必须自己审查，`scripts/check_article.py` 和 `check_prose.py` 不过不准交
 
 ## 目录
 
@@ -24,7 +24,8 @@
 server-promo/
 ├── SKILL.md
 ├── README.md
-└── examples.md
+├── examples.md
+└── scripts/check_article.py
 ```
 
 ## 安装
@@ -39,3 +40,11 @@ npx skills add JackXhl/xhl-skills --skill server-promo -g -y
 
 1. 各家推广链接，原样保留
 2. 能打开的官网或试用页，用来截图核对配置和价格
+
+## 自检
+
+写完先审图文，再跑脚本。退出码不是 0，不能把稿交给用户。
+
+```bash
+python scripts/check_article.py 稿件.md
+```

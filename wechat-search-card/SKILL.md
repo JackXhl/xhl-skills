@@ -32,17 +32,24 @@ tags: ["wechat", "design", "qrcode", "promo"]
 
 ## 生成
 
-在本技能目录执行：
+脚本就在本文件旁边：`scripts/render_card.py`。用这份绝对路径。不要在用户项目里另找同名脚本，也不要用文生图重画。
 
 ```bash
-python scripts/render_card.py --qr "<小程序码>" --keyword "<搜索词>" --out "<输出.png>"
+python "<本技能目录>/scripts/render_card.py" --qr "<小程序码>" --keyword "<搜索词>"
 ```
 
 `--out` 可省略，默认写到码旁边：`微信搜一搜-<搜索词>.png`。
 
-官方汉仪旗黑不进仓库。要那套字，加 `--font path/to/HYQiHei-60S.otf`，或设置 `WECHAT_SEARCH_FONT`。不传则用系统黑体（Windows 上是微软雅黑 Bold）。
+缺 Pillow 时只执行 `pip install pillow`，不要改渲染脚本。官方汉仪旗黑不进仓库。要那套字，加 `--font path/to/HYQiHei-60S.otf`，或设置 `WECHAT_SEARCH_FONT`。不传则用微软雅黑 Bold，没有再退到黑体。
 
-跑完把输出路径交给用户。码是原图缩放，不要说成重新绘制的二维码。
+```
+- [ ] 搜索词是用户原话，不是从品牌或文件名猜的
+- [ ] 码只有一张，或用户已经指定哪一张
+- [ ] 脚本退出码是 0
+- [ ] 打开成图：搜索条上的字和原话一致，四角透明，不要填成黑边或白边
+```
+
+没勾完不要把图交给用户。码是原图缩放，不要说成重新绘制的二维码。
 
 ## 不要做
 

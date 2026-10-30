@@ -21,7 +21,7 @@ python scripts/render_card.py --qr ./code.jpg --keyword "山雀视频下载"
 python scripts/self_test.py
 ```
 
-依赖：Python 3.10+、Pillow。中文字体用系统自带的；官方汉仪旗黑用 `--font` 指向本机文件，不要放进仓库。
+依赖：Python 3.10+、`pip install pillow`。中文字体用系统自带的微软雅黑 Bold，没有再退到黑体。官方汉仪旗黑用 `--font` 指向本机文件，不要放进仓库。
 
 ## 安装
 
@@ -35,6 +35,7 @@ npx skills add JackXhl/xhl-skills --skill wechat-search-card
 wechat-search-card/
 ├── SKILL.md
 ├── README.md
+├── requirements.txt
 ├── assets/search-mark.png
 └── scripts/
     ├── render_card.py

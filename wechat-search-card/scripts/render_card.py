@@ -28,12 +28,12 @@ MAX_KEYWORD = 12
 def find_font(explicit: str | None) -> str:
     if explicit:
         if not os.path.isfile(explicit):
-            raise SystemExit(f"font not found: {explicit}")
+            raise FileNotFoundError(f"font not found: {explicit}")
         return explicit
     env = os.environ.get("WECHAT_SEARCH_FONT", "").strip()
     if env:
         if not os.path.isfile(env):
-            raise SystemExit(f"WECHAT_SEARCH_FONT not found: {env}")
+            raise FileNotFoundError(f"WECHAT_SEARCH_FONT not found: {env}")
         return env
     windir = os.environ.get("WINDIR", r"C:\Windows")
     candidates = [
@@ -48,28 +48,49 @@ def find_font(explicit: str | None) -> str:
     for path in candidates:
         if os.path.isfile(path):
             return path
-    raise SystemExit(
+    raise FileNotFoundError(
         "no CJK font found. Pass --font, or set WECHAT_SEARCH_FONT to a .otf/.ttc/.ttf file."
     )
 
 
 def load_mark() -> Image.Image:
     if not MARK_PATH.is_file():
-        raise SystemExit(f"search mark missing: {MARK_PATH}")
-    return Image.open(MARK_PATH).convert("RGBA")
+        raise FileNotFoundError(f"search mark missing: {MARK_PATH}")
+    with Image.open(MARK_PATH) as im:
+        return im.convert("RGBA")
 
 
 def _near_white(pixel: tuple) -> bool:
     r, g, b = pixel[:3]
-    return r > 245 and g > 245 and b > 245
+    return r > 220 and g > 220 and b > 220
+
+
+def _outside_circle_is_blank(src: Image.Image) -> bool:
+    """Corner wedges of a circular mini-program code are blank. A square code has modules there.
+
+    Ignore the thin ring just outside the circle so antialiased rays are not treated as a square code.
+    """
+    w, h = src.size
+    cx, cy = (w - 1) / 2, (h - 1) / 2
+    radius = min(cx, cy)
+    step = max(1, min(w, h) // 48)
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            if math.hypot(x - cx, y - cy) <= radius * 1.08:
+                continue
+            pixel = src.getpixel((x, y))
+            if len(pixel) > 3 and pixel[3] < 20:
+                continue
+            if not _near_white(pixel):
+                return False
+    return True
 
 
 def prepare_qr(path: str, size: int) -> Image.Image:
-    src = Image.open(path).convert("RGBA")
+    with Image.open(path) as im:
+        src = im.convert("RGBA")
     src = src.resize((size, size), Image.Resampling.LANCZOS)
-    w, h = src.size
-    corners = [src.getpixel((2, 2)), src.getpixel((w - 3, 2)), src.getpixel((2, h - 3)), src.getpixel((w - 3, h - 3))]
-    if not all(_near_white(p) for p in corners):
+    if not _outside_circle_is_blank(src):
         return src
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse([0, 0, size - 1, size - 1], fill=255)
@@ -196,8 +217,15 @@ def main(argv: list[str] | None = None) -> int:
     if os.path.exists(out) and not args.force:
         print(f"output exists: {out}. Confirm overwrite, then pass --force.", file=sys.stderr)
         return 3
-    font_path = find_font(args.font)
-    image = render(args.qr, keyword, font_path)
+    try:
+        font_path = find_font(args.font)
+        image = render(args.qr, keyword, font_path)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"could not read image: {exc}", file=sys.stderr)
+        return 2
     parent = os.path.dirname(os.path.abspath(out))
     if parent:
         os.makedirs(parent, exist_ok=True)
